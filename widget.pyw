@@ -3524,21 +3524,23 @@ class Widget:
                                       font=("Segoe UI", 9, "bold"))
             self.pet_lbl.pack(side="left", padx=(1, 0))
 
-        # Icons immediately right of title (instead of pushed to far right)
-        self.theme_btn = tk.Label(title_bar, cursor="hand2",
-                                    font=("Segoe UI", 10), padx=3)
-        self.theme_btn.pack(side="left", padx=(8, 0))
-        self.theme_btn.bind("<Button-1>", lambda e: self._toggle_theme())
+        # Icons pinned to the far right of the title bar.
+        # Pack order matters with side="right": first packed = rightmost.
+        # Visual L->R: [theme  alpha  close]
+        self.close_btn = tk.Label(title_bar, text="✕", cursor="hand2",
+                                    font=("Segoe UI", 9, "bold"), padx=3)
+        self.close_btn.pack(side="right")
+        self.close_btn.bind("<Button-1>", lambda e: self.quit())
 
         self.alpha_btn = tk.Label(title_bar, text="◐", cursor="hand2",
                                     font=("Segoe UI", 10), padx=3)
-        self.alpha_btn.pack(side="left")
+        self.alpha_btn.pack(side="right")
         self.alpha_btn.bind("<Button-1>", lambda e: self._toggle_alpha_popup())
 
-        self.close_btn = tk.Label(title_bar, text="✕", cursor="hand2",
-                                    font=("Segoe UI", 9, "bold"), padx=3)
-        self.close_btn.pack(side="left")
-        self.close_btn.bind("<Button-1>", lambda e: self.quit())
+        self.theme_btn = tk.Label(title_bar, cursor="hand2",
+                                    font=("Segoe UI", 10), padx=3)
+        self.theme_btn.pack(side="right")
+        self.theme_btn.bind("<Button-1>", lambda e: self._toggle_theme())
 
         self.session_pct_lbl = tk.Label(self.outer, text="현재 세션  …",
                                           font=("Segoe UI", 9), anchor="w")
