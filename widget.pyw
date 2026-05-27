@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     "x": 100,
     "y": 100,
     "refresh_seconds": 180,
-    "plan_label": "Max",
+    "plan_label": "Max(5x)",
     "smart_topmost": True,
     "claude_processes": ["claude.exe", "pythonw.exe"],
     "alpha": 0.95,
@@ -3016,6 +3016,20 @@ PETS_B64 = {
         'cQftp37Z8u3eWl8RhSSuWeoZL2jWKGICscaKoLSG+gVSiKKvhlOun/OiC3YEoXzRY0K+GiI6jDZZ'
         'mwjdnOCUJ98fPeH/D/0WugJWFvgRAAAAAElFTkSuQmCC'
     ),
+    'claudecode': (
+        'iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAACbElEQVR4nO3bv2sTUQDA8XchbScp'
+        'Qqq0DtXFSTdFBxF0sS0Ogkv9MTm4CY79D3QT+j9Y+gcU3UTEwWK3dupiFusilJqppuQ5pPQq3LUJ'
+        'RL7Pu+9nerxLcpf7Jo8kXLIYYxCnAe5bBuD5DoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZ'
+        'AGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYA'
+        'mAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFgBoAZAGYAmAFg'
+        'BoAZAGYAmAFgBoAZAGYAmAFgBoAZANYs2/Dj7ZuQkGz6yctQqwCdzfWQkulQTS5BMAPADAAzAMwA'
+        'MAOk+jG0zOT1u/1BjL1fGx9HchCT1+6ELOuP975+CHUydIDzD5/3B/GgO6oA5x48y5pj9QzgEgQz'
+        'AMwAMAPADAAzACxrLy8Vbtj//q1wfuLCpcNRjPs77ZEcxMTMxaPvAafv92+zL16F/1mz7AmXGfb2'
+        'Az3mThvZbwpcgmAGgBkAZgCYAWAGgDVb848LN/x8vxJS0pp7FKooizEWbtheWgwpufx6NVSRSxDM'
+        'ADADwAwAMwDMAKlelnL29v3DUa+3+/ndEPOD2f20lt/31kJoNE6er12AqYWn/UHs/j5+ovP5g27h'
+        '/ICOn+jWvcVsbPzk+aqq+OsrfQaAGQBmAJgBYAZI9efoXIydrfwvq2eu3jxlfjCdzS/5fa/cOLou'
+        'qGy+xgH0L7kEwQwAMwDMADADwAwAMwDMADADBNYflUJ4sLWKPb4AAAAASUVORK5CYII='
+    ),
 }
 
 
@@ -3350,20 +3364,21 @@ class Widget:
         )
         self.title_lbl.pack(side="left")
 
-        self.close_btn = tk.Label(title_bar, text="✕", cursor="hand2",
-                                    font=("Segoe UI", 9, "bold"), padx=4)
-        self.close_btn.pack(side="right")
-        self.close_btn.bind("<Button-1>", lambda e: self.quit())
+        # Icons immediately right of title (instead of pushed to far right)
+        self.theme_btn = tk.Label(title_bar, cursor="hand2",
+                                    font=("Segoe UI", 10), padx=3)
+        self.theme_btn.pack(side="left", padx=(8, 0))
+        self.theme_btn.bind("<Button-1>", lambda e: self._toggle_theme())
 
         self.alpha_btn = tk.Label(title_bar, text="◐", cursor="hand2",
-                                    font=("Segoe UI", 10), padx=4)
-        self.alpha_btn.pack(side="right")
+                                    font=("Segoe UI", 10), padx=3)
+        self.alpha_btn.pack(side="left")
         self.alpha_btn.bind("<Button-1>", lambda e: self._toggle_alpha_popup())
 
-        self.theme_btn = tk.Label(title_bar, cursor="hand2",
-                                    font=("Segoe UI", 10), padx=4)
-        self.theme_btn.pack(side="right")
-        self.theme_btn.bind("<Button-1>", lambda e: self._toggle_theme())
+        self.close_btn = tk.Label(title_bar, text="✕", cursor="hand2",
+                                    font=("Segoe UI", 9, "bold"), padx=3)
+        self.close_btn.pack(side="left")
+        self.close_btn.bind("<Button-1>", lambda e: self.quit())
 
         self.session_pct_lbl = tk.Label(self.outer, text="현재 세션  …",
                                           font=("Segoe UI", 9), anchor="w")
