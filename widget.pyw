@@ -3118,6 +3118,118 @@ class CircleSlider:
         self.canvas.pack(**kwargs)
 
 
+# ---------------- Pet animation ----------------
+
+class AnimatedPet:
+    """Canvas-based pet widget that animates position using offsets.
+
+    Behaves like a Label for the consumer: supports .pack(), .bind(),
+    .configure(bg=...). Tick loop updates position every TICK_MS.
+    """
+
+    STYLES = ["bounce", "sway", "float", "squish", "breathe"]
+    TICK_MS = 120
+
+    def __init__(self, parent, photo, size, bg, style="bounce"):
+        self.size = size
+        self.photo = photo
+        self.style = style
+        margin = 3  # extra space so pet can move +/- 2px without clipping
+        cs = size + margin * 2
+        self.canvas = tk.Canvas(parent, width=cs, height=cs,
+                                 highlightthickness=0, bd=0, bg=bg)
+        self.cx = cs // 2
+        self.cy = cs // 2
+        self.image_id = self.canvas.create_image(self.cx, self.cy, image=photo)
+        self.frame = 0
+        self._after_id = None
+        self._tick()
+
+    def _compute_offset(self):
+        f = self.frame
+        s = self.style
+        if s == "bounce":
+            # quick up-hop every ~1.7s
+            phase = f % 14
+            if phase < 2: return (0, -1)
+            if phase < 4: return (0, -2)
+            if phase < 6: return (0, -1)
+            return (0, 0)
+        if s == "sway":
+            # gentle left-right wobble
+            phase = f % 30
+            if phase < 8: return (1, 0)
+            if phase < 15: return (0, 0)
+            if phase < 23: return (-1, 0)
+            return (0, 0)
+        if s == "float":
+            # slow up-down (ghost-like drift)
+            phase = f % 40
+            if phase < 10: return (0, -1)
+            if phase < 20: return (0, -2)
+            if phase < 30: return (0, -1)
+            return (0, 0)
+        if s == "squish":
+            # vertical compression — fake by brief downward shift
+            phase = f % 18
+            if phase < 3: return (0, 1)
+            return (0, 0)
+        if s == "breathe":
+            # very subtle slow rise/fall
+            phase = f % 60
+            if 15 <= phase < 45:
+                return (0, -1)
+            return (0, 0)
+        return (0, 0)
+
+    def _tick(self):
+        self.frame += 1
+        ox, oy = self._compute_offset()
+        try:
+            self.canvas.coords(self.image_id, self.cx + ox, self.cy + oy)
+        except Exception:
+            return  # canvas destroyed
+        self._after_id = self.canvas.after(self.TICK_MS, self._tick)
+
+    def configure(self, **kwargs):
+        self.canvas.configure(**kwargs)
+
+    def cget(self, key):
+        return self.canvas.cget(key)
+
+    def update_pet(self, new_photo, new_style=None):
+        self.photo = new_photo
+        if new_style is not None:
+            self.style = new_style
+        self.canvas.itemconfig(self.image_id, image=new_photo)
+
+    def bind(self, event, handler):
+        self.canvas.bind(event, handler)
+
+    def pack(self, **kwargs):
+        self.canvas.pack(**kwargs)
+
+    def stop(self):
+        if self._after_id is not None:
+            try:
+                self.canvas.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+
+def pet_style_for(pet_key):
+    """Deterministic style per pet key. Same pet always gets the same style.
+    Uses a stable char-sum hash (not Python's randomized hash())."""
+    if not pet_key:
+        return "bounce"
+    # Manual overrides for special pets
+    if pet_key == "claudecode":
+        return "bounce"
+    h = sum(ord(c) for c in pet_key)
+    return AnimatedPet.STYLES[h % len(AnimatedPet.STYLES)]
+
+
 # ---------------- Pet image ----------------
 
 def ensure_pet_assigned(cfg):
@@ -3385,8 +3497,11 @@ class Widget:
         self.title_lbl.pack(side="left")
 
         if self.pet_photo is not None:
-            self.pet_lbl = tk.Label(title_bar, image=self.pet_photo)
-            self.pet_lbl.image = self.pet_photo
+            style = pet_style_for(self.cfg.get("pet"))
+            self.pet_lbl = AnimatedPet(
+                title_bar, self.pet_photo, PET_SIZE,
+                bg=self.theme["bg"], style=style,
+            )
             self.pet_lbl.pack(side="left", padx=(1, 0))
         else:
             self.pet_lbl = tk.Label(title_bar, text="●",
@@ -3598,8 +3713,12 @@ class Widget:
         photo = load_pet_photo(self.cfg["pet"], PET_SIZE)
         if photo is not None:
             self.pet_photo = photo
-            self.pet_lbl.configure(image=self.pet_photo, text="")
-            self.pet_lbl.image = self.pet_photo
+            new_style = pet_style_for(self.cfg["pet"])
+            if isinstance(self.pet_lbl, AnimatedPet):
+                self.pet_lbl.update_pet(photo, new_style)
+            else:
+                self.pet_lbl.configure(image=self.pet_photo, text="")
+                self.pet_lbl.image = self.pet_photo
 
     def _toggle_smart(self):
         self.cfg["smart_topmost"] = bool(self.smart_var.get())
