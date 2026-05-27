@@ -3382,11 +3382,11 @@ class Widget:
         if self.pet_photo is not None:
             self.pet_lbl = tk.Label(title_bar, image=self.pet_photo)
             self.pet_lbl.image = self.pet_photo
-            self.pet_lbl.pack(side="left", padx=(6, 0))
+            self.pet_lbl.pack(side="left", padx=(1, 0))
         else:
             self.pet_lbl = tk.Label(title_bar, text="●",
                                       font=("Segoe UI", 9, "bold"))
-            self.pet_lbl.pack(side="left", padx=(6, 0))
+            self.pet_lbl.pack(side="left", padx=(1, 0))
 
         # Icons immediately right of title (instead of pushed to far right)
         self.theme_btn = tk.Label(title_bar, cursor="hand2",
