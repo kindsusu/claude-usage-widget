@@ -19,7 +19,10 @@ import ctypes
 from ctypes import wintypes
 import io
 import json
+import os
 import random
+import shutil
+import subprocess
 import threading
 import tkinter as tk
 import urllib.error
@@ -4720,6 +4723,49 @@ def save_config(cfg):
 
 # ---------------- API ----------------
 
+_login_proc = None
+_login_attempted = False
+
+
+def find_claude_exe():
+    """Locate the Claude Code executable across common Windows install layouts."""
+    p = shutil.which("claude")
+    if p:
+        return p
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        base = Path(appdata) / "Claude" / "claude-code"
+        if base.exists():
+            versions = sorted(base.glob("*/claude.exe"),
+                              key=lambda x: x.stat().st_mtime, reverse=True)
+            if versions:
+                return str(versions[0])
+        npm_cmd = Path(appdata) / "npm" / "claude.cmd"
+        if npm_cmd.exists():
+            return str(npm_cmd)
+    return None
+
+
+def trigger_claude_login():
+    """Spawn `claude login` in a new console (once per session until success).
+    Returns True if a login process was started or is already running."""
+    global _login_proc, _login_attempted
+    if _login_proc is not None and _login_proc.poll() is None:
+        return True
+    if _login_attempted:
+        return False
+    exe = find_claude_exe()
+    if not exe:
+        return False
+    try:
+        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        _login_proc = subprocess.Popen([exe, "login"], creationflags=flags)
+        _login_attempted = True
+        return True
+    except Exception:
+        return False
+
+
 def read_token():
     try:
         return json.loads(CREDS_PATH.read_text(encoding="utf-8")).get("claudeAiOauth", {}).get("accessToken")
@@ -4753,8 +4799,11 @@ def fetch_usage():
     """Returns (data, error_msg, retry_after_seconds).
     retry_after_seconds is non-zero only on 429 with Retry-After header.
     """
+    global _login_attempted
     token = read_token()
     if not token:
+        if trigger_claude_login():
+            return None, "Claude 로그인 진행 중...", 0
         return None, "토큰 없음 (claude login 필요)", 0
     req = urllib.request.Request(
         USAGE_URL,
@@ -4767,9 +4816,12 @@ def fetch_usage():
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
+            _login_attempted = False
             return json.loads(resp.read().decode("utf-8")), None, 0
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
+            if trigger_claude_login():
+                return None, "토큰 만료 → 재로그인 중...", 0
             return None, "토큰 만료 (claude login)", 0
         if e.code == 429:
             # Respect server's Retry-After (seconds)
