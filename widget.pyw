@@ -36,7 +36,7 @@ USAGE_URL   = "https://api.anthropic.com/api/oauth/usage"
 DEFAULT_CONFIG = {
     "x": 100,
     "y": 100,
-    "refresh_seconds": 300,
+    "refresh_seconds": 600,
     "plan_label": "",  # empty = auto-detect from credentials
     "smart_topmost": True,
     "claude_processes": ["claude.exe", "pythonw.exe"],
@@ -4729,9 +4729,12 @@ def detect_plan_label():
 
 
 def fetch_usage():
+    """Returns (data, error_msg, retry_after_seconds).
+    retry_after_seconds is non-zero only on 429 with Retry-After header.
+    """
     token = read_token()
     if not token:
-        return None, "토큰 없음 (claude login 필요)"
+        return None, "토큰 없음 (claude login 필요)", 0
     req = urllib.request.Request(
         USAGE_URL,
         headers={
@@ -4743,17 +4746,23 @@ def fetch_usage():
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8")), None
+            return json.loads(resp.read().decode("utf-8")), None, 0
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            return None, "토큰 만료 (claude login)"
+            return None, "토큰 만료 (claude login)", 0
         if e.code == 429:
-            return None, "API rate limited"
-        return None, f"HTTP {e.code}"
+            # Respect server's Retry-After (seconds)
+            try:
+                retry = int(e.headers.get("Retry-After", "0") or 0)
+            except (TypeError, ValueError):
+                retry = 0
+            msg = f"API rate limited ({retry//60}분 대기)" if retry > 60 else "API rate limited"
+            return None, msg, retry
+        return None, f"HTTP {e.code}", 0
     except (urllib.error.URLError, TimeoutError):
-        return None, "네트워크 오류"
+        return None, "네트워크 오류", 0
     except Exception as e:
-        return None, f"오류: {e}"
+        return None, f"오류: {e}", 0
 
 
 # ---------------- Helpers ----------------
@@ -5173,11 +5182,15 @@ class Widget:
             self.root.after(0, lambda: self._render(data, err))
         threading.Thread(target=worker, daemon=True).start()
 
-    def _render(self, data, err):
+    def _render(self, data, err, retry_after=0):
         self.fetching = False
         if err or not data:
             if err and ("429" in err or "rate limited" in err.lower()):
                 self._consec_429 += 1
+                # Respect server's Retry-After: store absolute timestamp
+                if retry_after > 0:
+                    import time
+                    self._retry_until = time.time() + retry_after + 5  # +5s buffer
             else:
                 self._consec_429 = 0
             self.footer_lbl.config(text=err or "데이터 없음", fg=self.theme["danger"])
@@ -5217,9 +5230,13 @@ class Widget:
         )
 
     def _schedule_refresh(self):
+        import time
         interval = self.cfg["refresh_seconds"]
-        if self._consec_429 > 0:
-            interval = min(600, 120 * (2 ** (self._consec_429 - 1)))
+        # If server told us to wait, schedule for that exact time
+        if hasattr(self, "_retry_until") and time.time() < self._retry_until:
+            interval = max(interval, int(self._retry_until - time.time()) + 5)
+        elif self._consec_429 > 0:
+            interval = min(1800, 300 * (2 ** (self._consec_429 - 1)))
         self.root.after(interval * 1000, self._tick)
 
     def _tick(self):
