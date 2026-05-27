@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     "x": 100,
     "y": 100,
     "refresh_seconds": 180,
-    "plan_label": "Max(5x)",
+    "plan_label": "",  # empty = auto-detect from credentials
     "smart_topmost": True,
     "claude_processes": ["claude.exe", "pythonw.exe"],
     "alpha": 0.95,
@@ -3228,6 +3228,28 @@ def read_token():
         return None
 
 
+def detect_plan_label():
+    """Read subscription tier from local credentials, return display label."""
+    try:
+        d = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
+        oauth = d.get("claudeAiOauth", {})
+        tier = (oauth.get("rateLimitTier") or "").lower()
+        sub = (oauth.get("subscriptionType") or "").lower()
+        if "max_20x" in tier:
+            return "Max(20x)"
+        if "max_5x" in tier:
+            return "Max(5x)"
+        if "pro" in tier or sub == "pro":
+            return "Pro"
+        if sub == "max":
+            return "Max"
+        if sub:
+            return sub.title()
+    except Exception:
+        pass
+    return "Max"
+
+
 def fetch_usage():
     token = read_token()
     if not token:
@@ -3349,20 +3371,22 @@ class Widget:
         title_bar = tk.Frame(self.outer)
         title_bar.pack(fill="x")
 
-        if self.pet_photo is not None:
-            self.pet_lbl = tk.Label(title_bar, image=self.pet_photo)
-            self.pet_lbl.image = self.pet_photo
-            self.pet_lbl.pack(side="left", padx=(0, 6))
-        else:
-            self.pet_lbl = tk.Label(title_bar, text="●",
-                                      font=("Segoe UI", 9, "bold"))
-            self.pet_lbl.pack(side="left", padx=(0, 4))
-
+        # Title first (leftmost), then pet to its right
         self.title_lbl = tk.Label(
-            title_bar, text=f"Claude {self.cfg['plan_label']}",
+            title_bar,
+            text=f"Claude {(self.cfg.get('plan_label') or '').strip() or detect_plan_label()}",
             font=("Segoe UI", 9, "bold"),
         )
         self.title_lbl.pack(side="left")
+
+        if self.pet_photo is not None:
+            self.pet_lbl = tk.Label(title_bar, image=self.pet_photo)
+            self.pet_lbl.image = self.pet_photo
+            self.pet_lbl.pack(side="left", padx=(6, 0))
+        else:
+            self.pet_lbl = tk.Label(title_bar, text="●",
+                                      font=("Segoe UI", 9, "bold"))
+            self.pet_lbl.pack(side="left", padx=(6, 0))
 
         # Icons immediately right of title (instead of pushed to far right)
         self.theme_btn = tk.Label(title_bar, cursor="hand2",
@@ -3590,8 +3614,10 @@ class Widget:
             self._current_z = "top"
 
     def _prompt_plan(self):
-        self._prompt("plan_label", "플랜 이름", str,
-                     on_save=lambda v: self.title_lbl.config(text=f"Claude {v}"))
+        # Empty value = revert to auto-detect from credentials
+        self._prompt("plan_label", "플랜 이름 (빈칸 = 자동)", str,
+                     on_save=lambda v: self.title_lbl.config(
+                         text=f"Claude {(v.strip() if v else '') or detect_plan_label()}"))
 
     def _prompt_interval(self):
         self._prompt("refresh_seconds", "새로고침 간격 (초)", int)
@@ -3644,6 +3670,11 @@ class Widget:
         finally:
             self._foreground_check_id = self.root.after(500, self._check_topmost)
 
+    def _display_plan(self):
+        """Return manual override if set, else auto-detected plan."""
+        custom = (self.cfg.get("plan_label") or "").strip()
+        return custom if custom else detect_plan_label()
+
     def refresh(self):
         if self.fetching:
             return
@@ -3688,7 +3719,7 @@ class Widget:
         ss_pct = ss.get("utilization", 0) or 0
         self.sonnet_pct_lbl.config(text=f"Sonnet 주간  {ss_pct:.0f}% 사용됨")
         self._draw_bar(self.sonnet_canvas, ss_pct)
-        plan = self.cfg["plan_label"]
+        plan = self._display_plan()
         if eu.get("is_enabled"):
             plan += " +Extra"
         self.title_lbl.config(text=f"Claude {plan}")
