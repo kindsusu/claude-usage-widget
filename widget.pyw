@@ -5193,9 +5193,9 @@ class Widget:
                 if retry_after > 0:
                     from datetime import timedelta
                     retry_at = datetime.now() + timedelta(seconds=retry_after)
-                    mins = retry_after // 60
-                    # Absolute time = stable; minutes hint = quick read.
-                    err = f"429 · 풀림 {retry_at.strftime('%H:%M')} (+{mins}분)"
+                    err = f"API limit · {retry_at.strftime('%H:%M')} 새로고침"
+                else:
+                    err = "API limit"
             else:
                 self._consec_429 = 0
             self.footer_lbl.config(text=err or "데이터 없음", fg=self.theme["danger"])
