@@ -23,6 +23,7 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import threading
 import tkinter as tk
 import urllib.error
@@ -52,11 +53,52 @@ DEFAULT_CONFIG = {
     "alpha": 0.95,
     "theme": "light",
     "pet": None,
+    "ui_scale": 1.3,  # baseline; user can override via menu (1.0 / 1.3 / 1.5 / 2.0)
 }
 
 # Keys that never persist to widget_config.json — changes via the prompt
 # apply for the current session only and revert to DEFAULT_CONFIG on restart.
 EPHEMERAL_KEYS = {"refresh_seconds"}
+
+
+def _enable_dpi_awareness():
+    """Tell Windows we render at native pixel density. Must run BEFORE tk.Tk().
+    Without this, Tkinter renders at 96 DPI and the OS scales the bitmap
+    bilinearly, which blurs text on >100% display scaling."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # Windows 8.1+
+        return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()  # Vista+ fallback
+    except (AttributeError, OSError):
+        pass
+
+
+def detect_system_scale():
+    """Return the system DPI as a multiplier (1.0 = 96 DPI = 100%)."""
+    if sys.platform != "win32":
+        return 1.0
+    try:
+        return ctypes.windll.user32.GetDpiForSystem() / 96.0
+    except (AttributeError, OSError):
+        pass
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        try:
+            dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+        finally:
+            ctypes.windll.user32.ReleaseDC(0, hdc)
+        return (dpi or 96) / 96.0
+    except (AttributeError, OSError):
+        return 1.0
+
+
+# Must execute at import time so the call happens before any tk.Tk() runs.
+_enable_dpi_awareness()
 
 THEMES = {
     "dark": {
@@ -4894,11 +4936,37 @@ class Widget:
         self.tray_icon = None
 
         self.root = tk.Tk()
+
+        # Apply DPI scaling. ui_scale is a multiplier over the 96 DPI baseline;
+        # 1.3 keeps text crisp without bloating the widget the way 1.5 (the
+        # system's native scaling on a 150% display) does. tk.scaling takes
+        # "pixels per point" so we multiply by 96/72.
+        ui_scale = self.cfg.get("ui_scale") or DEFAULT_CONFIG["ui_scale"]
+        self._ui_scale = ui_scale
+        try:
+            self.root.tk.call("tk", "scaling", ui_scale * (96.0 / 72.0))
+        except Exception:
+            pass
+
+        # One-time migration: stored x/y were saved by a DPI-UNAWARE widget
+        # (logical pixels). Re-express them in DPI-aware physical pixels so
+        # the widget appears in the same visual spot after upgrade.
+        if not self.cfg.get("_dpi_migrated"):
+            if ui_scale != 1.0:
+                self.cfg["x"] = int(self.cfg.get("x", 100) * ui_scale)
+                self.cfg["y"] = int(self.cfg.get("y", 100) * ui_scale)
+            self.cfg["_dpi_migrated"] = True
+            save_config(self.cfg)
+
+        # Pet image is raster, not vector — scale its pixel size with ui_scale
+        # so it stays visually proportional to the (now DPI-aware) UI.
+        self._pet_size = max(8, int(PET_SIZE * ui_scale))
+
         # IMPORTANT: pet loading must happen AFTER tk.Tk() exists, otherwise
         # ImageTk.PhotoImage creates a hidden Tcl interpreter and the resulting
         # image won't display in our real root's Labels.
         pet_key = ensure_pet_assigned(self.cfg)
-        self.pet_photo = load_pet_photo(pet_key, PET_SIZE)
+        self.pet_photo = load_pet_photo(pet_key, self._pet_size)
         self.root.title("Claude Usage")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
@@ -4955,7 +5023,7 @@ class Widget:
         if self.pet_photo is not None:
             style = pet_style_for(self.cfg.get("pet"))
             self.pet_lbl = AnimatedPet(
-                title_bar, self.pet_photo, PET_SIZE,
+                title_bar, self.pet_photo, self._pet_size,
                 bg=self.theme["bg"], style=style,
             )
             self.pet_lbl.pack(side="left", padx=(1, 0))
@@ -5156,11 +5224,40 @@ class Widget:
                                    command=self._toggle_smart)
         self.menu.add_command(label="플랜 이름 변경", command=self._prompt_plan)
         self.menu.add_command(label="새로고침 간격 변경", command=self._prompt_interval)
+        # UI scale cascade — selecting a value writes ui_scale to config
+        # and restarts the widget so the new tk_scaling takes effect.
+        current = self.cfg.get("ui_scale") or DEFAULT_CONFIG["ui_scale"]
+        scale_menu = tk.Menu(self.menu, tearoff=0)
+        for label, value in (("1.0×", 1.0), ("1.3× (기본)", 1.3),
+                             ("1.5×", 1.5), ("2.0×", 2.0)):
+            mark = " ✓" if abs(value - current) < 0.01 else ""
+            scale_menu.add_command(label=f"{label}{mark}",
+                                    command=lambda v=value: self._set_ui_scale(v))
+        self.menu.add_cascade(label="UI 배율 (재시작 적용)", menu=scale_menu)
         self.menu.add_separator()
         self.menu.add_command(label="펫 다시 뽑기", command=self._reroll_pet)
         self.menu.add_separator()
         self.menu.add_command(label="종료", command=self.quit)
         self.root.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+
+    def _set_ui_scale(self, scale):
+        """Persist a new UI scale and re-launch so tk.scaling can apply
+        cleanly to a fresh root. Existing widgets cannot have their scaling
+        retroactively changed."""
+        self.cfg["ui_scale"] = scale
+        # Position migration already happened on first DPI-aware run; the
+        # stored x/y are now in physical-pixel space and remain correct
+        # across scale changes.
+        save_config(self.cfg)
+        try:
+            python_dir = Path(sys.executable).parent
+            pythonw = python_dir / "pythonw.exe"
+            exe = str(pythonw) if pythonw.exists() else sys.executable
+            subprocess.Popen([exe, __file__],
+                             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        except Exception:
+            pass
+        self.quit()
 
     def _reroll_pet(self):
         if not PETS_B64:
@@ -5170,7 +5267,7 @@ class Widget:
         choices = [k for k in keys if k != current] or keys
         self.cfg["pet"] = random.choice(choices)
         save_config(self.cfg)
-        photo = load_pet_photo(self.cfg["pet"], PET_SIZE)
+        photo = load_pet_photo(self.cfg["pet"], self._pet_size)
         if photo is not None:
             self.pet_photo = photo
             new_style = pet_style_for(self.cfg["pet"])
