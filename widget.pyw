@@ -29,6 +29,12 @@ from pathlib import Path
 
 from PIL import Image, ImageTk
 
+try:
+    import pystray
+    HAS_PYSTRAY = True
+except ImportError:
+    HAS_PYSTRAY = False
+
 CREDS_PATH  = Path.home() / ".claude" / ".credentials.json"
 CONFIG_PATH = Path(__file__).with_name("widget_config.json")
 USAGE_URL   = "https://api.anthropic.com/api/oauth/usage"
@@ -4377,6 +4383,21 @@ PETS_B64 = {
     ),
 }
 
+# ---------------- Tray icon (base64 PNG) ----------------
+TRAY_ICON_B64 = (
+    'iVBORw0KGgoAAAANSUhEUgAAAEAAAAAoCAYAAABOzvzpAAABC2lDQ1BJQ0MgUHJvZmlsZQAAeJyV'
+    'kLFOwlAUhr+LJILBOMjAwNCBgUWCDsaBCYaGzRRJKE5tKV2gbW5rfAHZGFjZiItvIK/ghomJg5OP'
+    'QEh0NtdqysLAmb785885/zkgXgCydRj7sTT0ptYz+9rhJwKhOmA5UcjuEvD9nnjfzti/8gM3coA1'
+    'UJE9sw+iCBS9hKuK7YQbiu/jMAZxrVjeGC0QA6DqbbG9xU4olX8KNMajO7XrLzcF1+92gBxQJsJA'
+    'p6nuTyzBI1x9wcEs1ew5LCdQ+ki1ygJOHuB5lWrpT0JLWr9SFsgMh7B5gmMTTl/h6Pb/ETuyqXll'
+    'dAICPEa4aLTxcaihcUGdcy5/AKbWPz8bOFjoAAABFUlEQVR42u2ZQRKCMAxFm4wbxtNwDsettxCX'
+    '3oOrOB7DwaWnaVwxIgNpKS1j7f9LEqB9TdNMSlW1N5q65iAmY9XtnTQ7m8IFAAAAAAAAACVrF/Oc'
+    'FTLmeU5bN4zP9bV1StQIICl8CwilH3DsfyAJAkBmip1nEAH/PDmfhEmv60kQAQAAAAAAAAAAAEWK'
+    'cC+ALQAAAAAAAAAAqAP8ZE3XHGXunGWx5nGZt4doXIfU7Y2G6+ayR44A3d0S/0DQcsotwMGtJ83H'
+    '9f633TqjdPMc0HdqWcK6ub1tDoSrE+wLd8qPYzYfLa0boDZR7RvkCX7Kb5MI0FZ4OChRAIbCcfkt'
+    'BGAdSXDdpQaJz3NebE8eAZ9jML864A1XcVdSTvFixwAAAABJRU5ErkJggg=='
+)
+
 
 # ---------------- Gradient bar color ----------------
 
@@ -4808,6 +4829,8 @@ class Widget:
         self.theme_name = self.cfg.get("theme", "light")
         self.theme = THEMES.get(self.theme_name, THEMES["light"])
         self._alpha_popup = None
+        self._visible = True
+        self.tray_icon = None
 
         self.root = tk.Tk()
         # IMPORTANT: pet loading must happen AFTER tk.Tk() exists, otherwise
@@ -4839,6 +4862,8 @@ class Widget:
         self.root.bind_all("<Button-1>", self._on_global_click, add="+")
 
         self.root.after(80, lambda: set_window_zorder(self._hwnd(), "top"))
+
+        self._setup_tray()
 
         self.refresh()
         self._schedule_refresh()
@@ -4884,7 +4909,8 @@ class Widget:
         self.close_btn = tk.Label(title_bar, text="✕", cursor="hand2",
                                     font=("Segoe UI", 9, "bold"), padx=3)
         self.close_btn.pack(side="right")
-        self.close_btn.bind("<Button-1>", lambda e: self.quit())
+        # X = minimize to tray (full quit via tray menu only)
+        self.close_btn.bind("<Button-1>", lambda e: self.hide_to_tray())
 
         self.alpha_btn = tk.Label(title_bar, text="◐", cursor="hand2",
                                     font=("Segoe UI", 10), padx=3)
@@ -5266,9 +5292,61 @@ class Widget:
         self.refresh()
         self._schedule_refresh()
 
+    # ----- Tray -----
+
+    def _setup_tray(self):
+        if not HAS_PYSTRAY:
+            self.tray_icon = None
+            return
+        try:
+            raw = base64.b64decode(TRAY_ICON_B64)
+            img = Image.open(io.BytesIO(raw))
+            menu = pystray.Menu(
+                pystray.MenuItem("Show / Hide", self._tray_toggle, default=True),
+                pystray.MenuItem("Refresh now",
+                                  lambda: self.root.after(0, self.refresh)),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Quit",
+                                  lambda: self.root.after(0, self.quit)),
+            )
+            self.tray_icon = pystray.Icon("claude-usage-widget", img,
+                                           "Claude Usage Widget", menu)
+            threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        except Exception:
+            self.tray_icon = None
+
+    def _tray_toggle(self):
+        self.root.after(0, self._toggle_visibility)
+
+    def _toggle_visibility(self):
+        if self._visible:
+            self.hide_to_tray()
+        else:
+            self.show_widget()
+
+    def hide_to_tray(self):
+        save_config(self.cfg)
+        self.root.withdraw()
+        self._visible = False
+
+    def show_widget(self):
+        self.root.deiconify()
+        self._visible = True
+        self.root.attributes("-topmost", True)
+        set_window_zorder(self._hwnd(), "top")
+        self._current_z = "top"
+
     def quit(self):
         save_config(self.cfg)
-        self.root.destroy()
+        if getattr(self, "tray_icon", None):
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def run(self):
         self.root.mainloop()
