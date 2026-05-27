@@ -5175,11 +5175,20 @@ class Widget:
     def refresh(self):
         if self.fetching:
             return
+        # Honor server's Retry-After: skip call if still in cooldown
+        import time
+        if hasattr(self, "_retry_until") and time.time() < self._retry_until:
+            remaining = int(self._retry_until - time.time())
+            self.footer_lbl.config(
+                text=f"rate limit 대기 {remaining//60}분 {remaining%60}초",
+                fg=self.theme["danger"],
+            )
+            return
         self.fetching = True
         self.footer_lbl.config(text="새로고침 중…", fg=self.theme["dim"])
         def worker():
-            data, err = fetch_usage()
-            self.root.after(0, lambda: self._render(data, err))
+            data, err, retry = fetch_usage()
+            self.root.after(0, lambda: self._render(data, err, retry))
         threading.Thread(target=worker, daemon=True).start()
 
     def _render(self, data, err, retry_after=0):
