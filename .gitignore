@@ -1,0 +1,13 @@
+# User-specific runtime state — auto-generated on first launch
+widget_config.json
+
+# Debug log
+widget.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS junk
+Thumbs.db
+.DS_Store
