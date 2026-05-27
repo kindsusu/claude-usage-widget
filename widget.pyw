@@ -5175,15 +5175,9 @@ class Widget:
     def refresh(self):
         if self.fetching:
             return
-        # Honor server's Retry-After: skip call if still in cooldown
-        import time
-        if hasattr(self, "_retry_until") and time.time() < self._retry_until:
-            remaining = int(self._retry_until - time.time())
-            self.footer_lbl.config(
-                text=f"rate limit 대기 {remaining//60}분 {remaining%60}초",
-                fg=self.theme["danger"],
-            )
-            return
+        # No cooldown enforcement — always attempt at the configured interval.
+        # The server's Retry-After value is shown to the user for inspection
+        # but does not gate the next call.
         self.fetching = True
         self.footer_lbl.config(text="새로고침 중…", fg=self.theme["dim"])
         def worker():
@@ -5194,12 +5188,12 @@ class Widget:
     def _render(self, data, err, retry_after=0):
         self.fetching = False
         if err or not data:
+            # Track Retry-After purely for display; don't enforce.
             if err and ("429" in err or "rate limited" in err.lower()):
                 self._consec_429 += 1
-                # Respect server's Retry-After: store absolute timestamp
                 if retry_after > 0:
-                    import time
-                    self._retry_until = time.time() + retry_after + 5  # +5s buffer
+                    mins, secs = divmod(retry_after, 60)
+                    err = f"429 — Retry-After {mins}m{secs}s"
             else:
                 self._consec_429 = 0
             self.footer_lbl.config(text=err or "데이터 없음", fg=self.theme["danger"])
@@ -5239,13 +5233,9 @@ class Widget:
         )
 
     def _schedule_refresh(self):
-        import time
+        # Always schedule at the configured interval — no backoff, no
+        # Retry-After enforcement (user is empirically observing the limit).
         interval = self.cfg["refresh_seconds"]
-        # If server told us to wait, schedule for that exact time
-        if hasattr(self, "_retry_until") and time.time() < self._retry_until:
-            interval = max(interval, int(self._retry_until - time.time()) + 5)
-        elif self._consec_429 > 0:
-            interval = min(1800, 300 * (2 ** (self._consec_429 - 1)))
         self.root.after(interval * 1000, self._tick)
 
     def _tick(self):
