@@ -11,7 +11,8 @@ Always-on-top Windows desktop widget showing real-time Claude Max plan usage. Ma
 - **Transparency** slider popup (30–100%)
 - **Smart top-most** — floats above only when Claude (or the widget itself) is the active window; recedes when you switch to other apps
 - **Multi-monitor** aware — drag to any screen
-- **20 pixel pets** — random pet assigned on first run, persistent (stored in config)
+- **31 pixel pets** with whole-body animations (bounce/sway/float/squish/breathe), random assignment on first run
+- **System tray** — X button minimizes to tray; left-click tray to toggle, right-click for menu
 - **Gradient bars** — smooth green → yellow → red as usage climbs
 - **Single file** — `widget.pyw` is fully self-contained (~280 KB with embedded pet sprites)
 
@@ -20,14 +21,14 @@ Always-on-top Windows desktop widget showing real-time Claude Max plan usage. Ma
 - Windows 10/11
 - Python 3.8+
 - [Claude Code](https://claude.com/code) installed and logged in (`claude login`)
-- `pip install pillow`
+- `pip install pillow pystray`
 
 The widget reads the OAuth token Claude Code stores in `~/.claude/.credentials.json` — no manual API key or cookie handling needed.
 
 ## Install
 
 ```bash
-pip install pillow
+pip install pillow pystray
 ```
 
 Download `widget.pyw` and double-click `실행.bat`, or run directly:
@@ -85,7 +86,17 @@ Right-click the widget for the full menu (refresh, theme, pet reroll, settings, 
 
 ## Pet system
 
-20 pixel-art pets are embedded as base64 inside `widget.pyw`. On first run, one is randomly assigned and persisted in `widget_config.json`. To reroll, use the right-click menu → "펫 다시 뽑기".
+31 pixel-art pets are embedded as base64 inside `widget.pyw`. On first run, one is randomly assigned and persisted in `widget_config.json`. To reroll, use the right-click menu → "펫 다시 뽑기".
+
+Each pet gets a deterministic animation style (bounce, sway, float, squish, or breathe) based on its name — same pet always animates the same way.
+
+## System tray
+
+Click the **X** on the widget to minimize it to the system tray (it does **not** quit — the process keeps running so the widget can be brought back instantly).
+
+- **Tray icon left-click** → toggle widget visibility
+- **Tray icon right-click** → menu (Show/Hide, Refresh now, Quit)
+- The only way to fully quit is the **Quit** item in the tray menu
 
 ## Token expiry
 
@@ -103,6 +114,9 @@ ver   # should show "Microsoft Windows"
 
 # 2. Python 3.8+
 python --version
+
+# 2b. Required Python packages
+pip install pillow pystray
 
 # 3. Claude Code installed and logged in
 test -f "$USERPROFILE/.claude/.credentials.json" && python -c "
@@ -126,11 +140,11 @@ INSTALL_DIR="$HOME/claude-usage-widget"
 # Clone
 git clone https://github.com/kindsusu/claude-usage-widget.git "$INSTALL_DIR"
 
-# Install Python dep
-pip install pillow
+# Install Python deps
+pip install pillow pystray
 
-# Verify import works
-python -c "from PIL import Image, ImageTk; print('pillow OK')"
+# Verify imports work
+python -c "from PIL import Image, ImageTk; import pystray; print('deps OK')"
 ```
 
 ### Launch
