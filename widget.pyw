@@ -36,7 +36,7 @@ USAGE_URL   = "https://api.anthropic.com/api/oauth/usage"
 DEFAULT_CONFIG = {
     "x": 100,
     "y": 100,
-    "refresh_seconds": 180,
+    "refresh_seconds": 300,
     "plan_label": "",  # empty = auto-detect from credentials
     "smart_topmost": True,
     "claude_processes": ["claude.exe", "pythonw.exe"],
