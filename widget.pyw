@@ -3562,7 +3562,8 @@ class Widget:
         self.title_lbl.master.configure(bg=t["bg"])
         self.title_lbl.configure(bg=t["bg"], fg=t["accent"])
         self.pet_lbl.configure(bg=t["bg"])
-        if isinstance(self.pet_lbl.cget("text"), str) and self.pet_lbl.cget("text") == "●":
+        # Only the fallback dot Label has 'text' / 'fg' to update
+        if isinstance(self.pet_lbl, tk.Label) and self.pet_lbl.cget("text") == "●":
             self.pet_lbl.configure(fg=t["accent"])
         self.close_btn.configure(bg=t["bg"], fg=t["btn"])
         self.alpha_btn.configure(bg=t["bg"], fg=t["btn"])
