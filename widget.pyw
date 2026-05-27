@@ -3128,13 +3128,13 @@ class AnimatedPet:
     """
 
     STYLES = ["bounce", "sway", "float", "squish", "breathe"]
-    TICK_MS = 120
+    TICK_MS = 80
 
     def __init__(self, parent, photo, size, bg, style="bounce"):
         self.size = size
         self.photo = photo
         self.style = style
-        margin = 3  # extra space so pet can move +/- 2px without clipping
+        margin = 5  # extra space so pet can move +/- 4px without clipping
         cs = size + margin * 2
         self.canvas = tk.Canvas(parent, width=cs, height=cs,
                                  highlightthickness=0, bd=0, bg=bg)
@@ -3149,36 +3149,52 @@ class AnimatedPet:
         f = self.frame
         s = self.style
         if s == "bounce":
-            # quick up-hop every ~1.7s
-            phase = f % 14
-            if phase < 2: return (0, -1)
-            if phase < 4: return (0, -2)
-            if phase < 6: return (0, -1)
+            # crouch -> hop -> land cycle (~1.6s)
+            phase = f % 20
+            if phase < 2:  return (0,  1)   # crouch (anticipation)
+            if phase < 4:  return (0, -2)
+            if phase < 7:  return (0, -4)   # peak
+            if phase < 10: return (0, -2)
+            if phase < 12: return (0, -1)
             return (0, 0)
         if s == "sway":
-            # gentle left-right wobble
-            phase = f % 30
-            if phase < 8: return (1, 0)
-            if phase < 15: return (0, 0)
-            if phase < 23: return (-1, 0)
-            return (0, 0)
+            # waddle left-right (~2.8s for full L-R-L)
+            phase = f % 36
+            if phase < 4:   return (0, 0)
+            if phase < 9:   return (2, 0)
+            if phase < 14:  return (3, 0)
+            if phase < 18:  return (2, 0)
+            if phase < 22:  return (0, 0)
+            if phase < 27:  return (-2, 0)
+            if phase < 32:  return (-3, 0)
+            return (-2, 0)
         if s == "float":
-            # slow up-down (ghost-like drift)
-            phase = f % 40
-            if phase < 10: return (0, -1)
-            if phase < 20: return (0, -2)
-            if phase < 30: return (0, -1)
+            # slow up-down drift like a ghost (~3.5s)
+            phase = f % 44
+            if phase < 6:   return (0, 0)
+            if phase < 12:  return (0, -1)
+            if phase < 18:  return (0, -3)
+            if phase < 24:  return (0, -4)
+            if phase < 30:  return (0, -3)
+            if phase < 36:  return (0, -1)
             return (0, 0)
         if s == "squish":
-            # vertical compression — fake by brief downward shift
-            phase = f % 18
-            if phase < 3: return (0, 1)
+            # squash flat then pop back up (~2s)
+            phase = f % 24
+            if phase < 2:   return (0, 1)
+            if phase < 4:   return (0, 3)   # full squash
+            if phase < 6:   return (0, 2)
+            if phase < 8:   return (0, 0)
+            if phase < 10:  return (0, -2)  # bounce after release
+            if phase < 12:  return (0, -1)
             return (0, 0)
         if s == "breathe":
-            # very subtle slow rise/fall
-            phase = f % 60
-            if 15 <= phase < 45:
-                return (0, -1)
+            # gentle visible rise/fall (~3.6s)
+            phase = f % 44
+            if phase < 11:  return (0, 0)
+            if phase < 16:  return (0, -1)
+            if phase < 28:  return (0, -2)
+            if phase < 33:  return (0, -1)
             return (0, 0)
         return (0, 0)
 
