@@ -3145,6 +3145,11 @@ def load_pet_photo(pet_key, size=PET_SIZE, bg_tolerance=15):
             else:
                 new.append((r, g, b, 255))
         img.putdata(new)
+        # Crop to bounding box of opaque pixels so the character fills the
+        # target size instead of leaving transparent margin from source.
+        bbox = img.getbbox()
+        if bbox:
+            img = img.crop(bbox)
         img = img.resize((size, size), Image.LANCZOS)
         return ImageTk.PhotoImage(img)
     except Exception:
