@@ -5188,12 +5188,14 @@ class Widget:
     def _render(self, data, err, retry_after=0):
         self.fetching = False
         if err or not data:
-            # Track Retry-After purely for display; don't enforce.
             if err and ("429" in err or "rate limited" in err.lower()):
                 self._consec_429 += 1
                 if retry_after > 0:
-                    mins, secs = divmod(retry_after, 60)
-                    err = f"429 — Retry-After {mins}m{secs}s"
+                    from datetime import timedelta
+                    retry_at = datetime.now() + timedelta(seconds=retry_after)
+                    mins = retry_after // 60
+                    # Absolute time = stable; minutes hint = quick read.
+                    err = f"429 · 풀림 {retry_at.strftime('%H:%M')} (+{mins}분)"
             else:
                 self._consec_429 = 0
             self.footer_lbl.config(text=err or "데이터 없음", fg=self.theme["danger"])
