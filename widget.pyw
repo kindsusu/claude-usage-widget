@@ -45,7 +45,7 @@ USAGE_URL   = "https://api.anthropic.com/api/oauth/usage"
 DEFAULT_CONFIG = {
     "x": 100,
     "y": 100,
-    "refresh_seconds": 600,
+    "refresh_seconds": 180,
     "plan_label": "",  # empty = auto-detect from credentials
     "smart_topmost": True,
     "claude_processes": ["claude.exe", "pythonw.exe"],
@@ -53,6 +53,10 @@ DEFAULT_CONFIG = {
     "theme": "light",
     "pet": None,
 }
+
+# Keys that never persist to widget_config.json — changes via the prompt
+# apply for the current session only and revert to DEFAULT_CONFIG on restart.
+EPHEMERAL_KEYS = {"refresh_seconds"}
 
 THEMES = {
     "dark": {
@@ -4706,17 +4710,22 @@ def set_window_zorder(hwnd, mode):
 # ---------------- Config ----------------
 
 def load_config():
+    cfg = DEFAULT_CONFIG.copy()
     if CONFIG_PATH.exists():
         try:
-            return {**DEFAULT_CONFIG, **json.loads(CONFIG_PATH.read_text(encoding="utf-8"))}
+            stored = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            for k, v in stored.items():
+                if k not in EPHEMERAL_KEYS:
+                    cfg[k] = v
         except Exception:
             pass
-    return DEFAULT_CONFIG.copy()
+    return cfg
 
 
 def save_config(cfg):
     try:
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        to_save = {k: v for k, v in cfg.items() if k not in EPHEMERAL_KEYS}
+        CONFIG_PATH.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
