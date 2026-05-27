@@ -72,7 +72,7 @@ THEMES = {
 
 BAR_WIDTH = 220
 BAR_HEIGHT = 8
-PET_SIZE = 28
+PET_SIZE = 22
 
 
 # ---------------- Embedded pet images (base64 PNG) ----------------
