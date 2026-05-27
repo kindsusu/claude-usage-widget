@@ -1,0 +1,46 @@
+2026-05-27T21:01:12  === START interval=60s pid=29192 ===
+2026-05-27T21:01:13  #001 200 (539ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:02:13  #002 200 (616ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:03:14  #003 200 (500ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:04:15  #004 200 (619ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:05:15  #005 200 (513ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:06:16  #006 200 (500ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:07:16  #007 200 (521ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:08:17  #008 200 (523ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:09:17  #009 HTTP 429 Retry-After=0s body='{\n  "error": {\n    "type": "rate_limit_error",\n    "message": "Rate limited. Please try again later."\n  }\n}'
+2026-05-27T21:10:17  #010 HTTP 429 Retry-After=0s body='{\n  "error": {\n    "type": "rate_limit_error",\n    "message": "Rate limited. Please try again later."\n  }\n}'
+2026-05-27T21:11:17  #011 HTTP 429 Retry-After=0s body='{\n  "error": {\n    "type": "rate_limit_error",\n    "message": "Rate limited. Please try again later."\n  }\n}'
+2026-05-27T21:12:18  #012 200 (644ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:13:18  #013 HTTP 429 Retry-After=0s body='{\n  "error": {\n    "type": "rate_limit_error",\n    "message": "Rate limited. Please try again later."\n  }\n}'
+2026-05-27T21:14:18  #014 200 (446ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:15:19  #015 HTTP 429 Retry-After=0s body='{\n  "error": {\n    "type": "rate_limit_error",\n    "message": "Rate limited. Please try again later."\n  }\n}'
+2026-05-27T21:16:19  #016 200 (469ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:17:19  #017 HTTP 429 Retry-After=0s body='{\n  "error": {\n    "type": "rate_limit_error",\n    "message": "Rate limited. Please try again later."\n  }\n}'
+2026-05-27T21:18:19  #018 HTTP 429 Retry-After=0s body='{\n  "error": {\n    "type": "rate_limit_error",\n    "message": "Rate limited. Please try again later."\n  }\n}'
+2026-05-27T21:19:20  #019 200 (434ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:20:20  #020 EXCEPTION URLError: <urlopen error [Errno 11001] getaddrinfo failed>
+2026-05-27T21:21:20  #021 EXCEPTION URLError: <urlopen error [Errno 11001] getaddrinfo failed>
+2026-05-27T21:22:20  #022 200 (494ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:23:21  #023 200 (617ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:24:23  #024 200 (1636ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:25:23  #025 200 (465ms) 5h=9.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:26:24  #026 200 (626ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:27:24  #027 200 (531ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:28:25  #028 200 (816ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:29:26  #029 200 (513ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:30:26  #030 200 (722ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:31:27  #031 200 (710ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:32:28  #032 200 (512ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:33:29  #033 200 (1229ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:34:29  #034 200 (546ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:35:30  #035 200 (493ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:36:31  #036 200 (718ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:37:31  #037 200 (599ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:38:32  #038 200 (610ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:39:33  #039 200 (1041ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:40:33  #040 200 (493ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:41:34  #041 200 (958ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:42:35  #042 200 (517ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:43:36  #043 200 (804ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:44:36  #044 200 (636ms) 5h=10.0% 7d=17.0% omelette=22.0%
+2026-05-27T21:45:37  #045 200 (515ms) 5h=10.0% 7d=17.0% omelette=22.0%
