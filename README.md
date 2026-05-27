@@ -91,6 +91,90 @@ Right-click the widget for the full menu (refresh, theme, pet reroll, settings, 
 
 If you see "토큰 만료 (claude login)" in the footer, just run `claude login` in any terminal — the widget will pick up the refreshed token within one polling cycle.
 
+## For AI agents (Claude Code, etc.)
+
+If you're an AI assistant installing this on behalf of a user, follow these steps in order. Each step has a verification command — stop and tell the user if a step fails.
+
+### Prerequisites (verify, do not auto-install)
+
+```bash
+# 1. Windows? (this widget is Windows-only — Win32 APIs)
+ver   # should show "Microsoft Windows"
+
+# 2. Python 3.8+
+python --version
+
+# 3. Claude Code installed and logged in
+test -f "$USERPROFILE/.claude/.credentials.json" && python -c "
+import json
+d = json.load(open(r'$USERPROFILE/.claude/.credentials.json'))
+print('logged in:', 'claudeAiOauth' in d and bool(d['claudeAiOauth'].get('accessToken')))
+"
+```
+
+If any prerequisite is missing, instruct the user:
+- No Python → install from https://www.python.org/downloads/ with "Add Python to PATH" checked
+- No Claude Code → `npm install -g @anthropic-ai/claude-code`
+- Not logged in → user must run `claude login` themselves (browser OAuth, can't be automated)
+
+### Install
+
+```bash
+# Pick a stable install location — user's home or Desktop
+INSTALL_DIR="$HOME/claude-usage-widget"
+
+# Clone
+git clone https://github.com/kindsusu/claude-usage-widget.git "$INSTALL_DIR"
+
+# Install Python dep
+pip install pillow
+
+# Verify import works
+python -c "from PIL import Image, ImageTk; print('pillow OK')"
+```
+
+### Launch
+
+```bash
+# Use cmd //c on Git Bash to avoid bash interpreting Windows paths
+cmd //c start "" pythonw "$INSTALL_DIR/widget.pyw"
+
+# Verify it stayed alive after 2 seconds
+sleep 2 && tasklist | grep -i pythonw
+```
+
+If `pythonw` is not in PATH, use the full path: `C:/Users/<user>/AppData/Local/Programs/Python/Python3xx/pythonw.exe`.
+
+### Autostart on boot (optional)
+
+```powershell
+$lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Claude Usage Widget.lnk"
+$pythonw = (Get-Command pythonw).Source
+$widget = "$env:USERPROFILE\claude-usage-widget\widget.pyw"
+$sh = New-Object -ComObject WScript.Shell
+$shortcut = $sh.CreateShortcut($lnk)
+$shortcut.TargetPath = $pythonw
+$shortcut.Arguments = "`"$widget`""
+$shortcut.WorkingDirectory = Split-Path $widget -Parent
+$shortcut.Save()
+```
+
+### Common issues
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Widget process starts but no window visible | `widget_config.json` has off-screen `x`/`y` | Delete `widget_config.json` and relaunch |
+| Pet (image) doesn't show | Old PIL or wrong widget version | `pip install --upgrade pillow`, ensure widget.pyw is fresh from this repo |
+| Footer shows "토큰 만료" or "토큰 없음" | OAuth token missing/expired | User runs `claude login` |
+| Footer shows "API rate limited" | Too many polls in short time | Wait 5–10 min; widget auto-backs-off |
+| Title bar shows `●` instead of pet | `ImageTk.PhotoImage` called before `tk.Tk()` | Bug in older version — pull latest |
+
+### Do NOT
+
+- Do NOT modify `~/.claude/.credentials.json` (Claude Code owns it)
+- Do NOT bundle your own PETS_B64 unless rebuilding from `pets/` source images
+- Do NOT change the API endpoint or headers — `anthropic-beta: oauth-2025-04-20` is required
+
 ## Credits
 
 Inspired by [INNO-HI/ClaudeUsageWidget](https://github.com/INNO-HI/ClaudeUsageWidget) (Node.js) — that repo was the key reference for finding the OAuth `usage` endpoint. This is a Python/tkinter port with a different UI and a few extra features (smart topmost, pets, theme toggle).
