@@ -5193,13 +5193,16 @@ class Widget:
                 if retry_after > 0:
                     from datetime import timedelta
                     retry_at = datetime.now() + timedelta(seconds=retry_after)
-                    err = f"API limit · {retry_at.strftime('%H:%M')} 새로고침"
+                    err = f"API limit · resets {retry_at.strftime('%H:%M')}"
+                    self._schedule_unlock_refresh(retry_after)
                 else:
                     err = "API limit"
             else:
                 self._consec_429 = 0
             self.footer_lbl.config(text=err or "데이터 없음", fg=self.theme["danger"])
             return
+        # Success path — cancel any pending unlock-refresh, nothing to retry.
+        self._cancel_unlock_refresh()
         self._consec_429 = 0
         self._last_data = data
         fh = data.get("five_hour") or {}
@@ -5239,6 +5242,25 @@ class Widget:
         # Retry-After enforcement (user is empirically observing the limit).
         interval = self.cfg["refresh_seconds"]
         self.root.after(interval * 1000, self._tick)
+
+    def _schedule_unlock_refresh(self, seconds_until_unlock):
+        """One-shot refresh fired the moment the rate limit window resets.
+        +5s buffer so the server has time to clear state."""
+        self._cancel_unlock_refresh()
+        delay_ms = max(1000, (seconds_until_unlock + 5) * 1000)
+        self._unlock_refresh_id = self.root.after(delay_ms, self._do_unlock_refresh)
+
+    def _cancel_unlock_refresh(self):
+        if getattr(self, "_unlock_refresh_id", None) is not None:
+            try:
+                self.root.after_cancel(self._unlock_refresh_id)
+            except Exception:
+                pass
+            self._unlock_refresh_id = None
+
+    def _do_unlock_refresh(self):
+        self._unlock_refresh_id = None
+        self.refresh()
 
     def _tick(self):
         self.refresh()
