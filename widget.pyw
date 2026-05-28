@@ -5228,8 +5228,8 @@ class Widget:
         # and restarts the widget so the new tk_scaling takes effect.
         current = self.cfg.get("ui_scale") or DEFAULT_CONFIG["ui_scale"]
         scale_menu = tk.Menu(self.menu, tearoff=0)
-        for label, value in (("1.0× (기본)", 1.0), ("1.3×", 1.3),
-                             ("1.5×", 1.5), ("2.0×", 2.0)):
+        for label, value in (("0.8×", 0.8), ("1.0× (기본)", 1.0),
+                             ("1.3×", 1.3), ("1.5×", 1.5), ("2.0×", 2.0)):
             mark = " ✓" if abs(value - current) < 0.01 else ""
             scale_menu.add_command(label=f"{label}{mark}",
                                     command=lambda v=value: self._set_ui_scale(v))
