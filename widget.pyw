@@ -53,7 +53,7 @@ DEFAULT_CONFIG = {
     "alpha": 0.95,
     "theme": "light",
     "pet": None,
-    "ui_scale": 1.3,  # baseline; user can override via menu (1.0 / 1.3 / 1.5 / 2.0)
+    "ui_scale": 1.0,  # baseline; user can override via menu (1.0 / 1.3 / 1.5 / 2.0)
 }
 
 # Keys that never persist to widget_config.json — changes via the prompt
@@ -5228,7 +5228,7 @@ class Widget:
         # and restarts the widget so the new tk_scaling takes effect.
         current = self.cfg.get("ui_scale") or DEFAULT_CONFIG["ui_scale"]
         scale_menu = tk.Menu(self.menu, tearoff=0)
-        for label, value in (("1.0×", 1.0), ("1.3× (기본)", 1.3),
+        for label, value in (("1.0× (기본)", 1.0), ("1.3×", 1.3),
                              ("1.5×", 1.5), ("2.0×", 2.0)):
             mark = " ✓" if abs(value - current) < 0.01 else ""
             scale_menu.add_command(label=f"{label}{mark}",
