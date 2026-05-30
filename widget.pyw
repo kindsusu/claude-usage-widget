@@ -100,6 +100,45 @@ def detect_system_scale():
 # Must execute at import time so the call happens before any tk.Tk() runs.
 _enable_dpi_awareness()
 
+
+_singleton_handle = None
+
+
+def acquire_single_instance(name="claude-usage-widget-singleton"):
+    """Return True if this is the only running instance.
+
+    The SessionStart hook launches pythonw.exe on every Claude session; if
+    the widget is already up, a named mutex lets the new launch detect the
+    existing one and exit silently. pythonw has no console, so the rejected
+    launch flashes nothing. Holding the handle in a module global keeps the
+    mutex owned for the whole process lifetime."""
+    global _singleton_handle
+    if sys.platform != "win32":
+        return True
+    ERROR_ALREADY_EXISTS = 183
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        return True  # fail open: if the mutex can't be created, allow launch
+    if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return False
+    _singleton_handle = handle
+    return True
+
+
+def release_single_instance():
+    """Drop the singleton mutex so a deliberate self-restart (scale change)
+    can re-acquire it. Without this the relaunched process would see the
+    still-alive old process holding the mutex and exit immediately."""
+    global _singleton_handle
+    if _singleton_handle:
+        try:
+            ctypes.windll.kernel32.CloseHandle(_singleton_handle)
+        except Exception:
+            pass
+        _singleton_handle = None
+
+
 THEMES = {
     "dark": {
         "bg":     "#1e1e2e",
@@ -5249,6 +5288,10 @@ class Widget:
         # stored x/y are now in physical-pixel space and remain correct
         # across scale changes.
         save_config(self.cfg)
+        # Release the singleton mutex BEFORE spawning the replacement so the
+        # new process can acquire it; otherwise it would see this still-alive
+        # process as the running instance and exit on startup.
+        release_single_instance()
         try:
             python_dir = Path(sys.executable).parent
             pythonw = python_dir / "pythonw.exe"
@@ -5511,4 +5554,7 @@ class Widget:
 
 
 if __name__ == "__main__":
-    Widget().run()
+    # Exit silently if another instance already owns the singleton mutex
+    # (e.g. the SessionStart hook fired while the widget was already running).
+    if acquire_single_instance():
+        Widget().run()
