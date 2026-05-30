@@ -5272,7 +5272,14 @@ class Widget:
             w.bind("<ButtonRelease-1>", end)
 
     def _bind_menu(self):
-        self.menu = tk.Menu(self.root, tearoff=0)
+        # The right-click menu must NOT grow with ui_scale. tk.scaling scales
+        # everything specified in points, so we give the menu a PIXEL font
+        # size (negative value) — pixel sizes ignore tk.scaling. The size
+        # tracks the system DPI so the popup looks like a native Windows menu
+        # at any ui_scale.
+        menu_px = -max(11, round(12 * detect_system_scale()))
+        menu_font = ("Segoe UI", menu_px)
+        self.menu = tk.Menu(self.root, tearoff=0, font=menu_font)
         self.menu.add_command(label="지금 새로고침", command=self.refresh)
         self.menu.add_separator()
         self.smart_var = tk.BooleanVar(value=self.cfg.get("smart_topmost", True))
@@ -5284,7 +5291,7 @@ class Widget:
         # UI scale cascade — selecting a value writes ui_scale to config
         # and restarts the widget so the new tk_scaling takes effect.
         current = self.cfg.get("ui_scale") or DEFAULT_CONFIG["ui_scale"]
-        scale_menu = tk.Menu(self.menu, tearoff=0)
+        scale_menu = tk.Menu(self.menu, tearoff=0, font=menu_font)
         for label, value in (("0.8×", 0.8), ("1.0× (기본)", 1.0),
                              ("1.3×", 1.3), ("1.5×", 1.5), ("2.0×", 2.0)):
             mark = " ✓" if abs(value - current) < 0.01 else ""
