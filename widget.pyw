@@ -4815,6 +4815,12 @@ def save_config(cfg):
 
 _login_proc = None
 _login_attempted = False
+_auth_fail_streak = 0
+# Consecutive auth failures (missing token / 401 / 403) required before the
+# widget auto-launches `claude login`. A single transient failure — e.g. a
+# read landing while Claude Code rewrites .credentials.json during a token
+# refresh — must NOT pop a console. Only a sustained failure should.
+AUTH_FAIL_THRESHOLD = 3
 
 
 def find_claude_exe():
@@ -4889,12 +4895,18 @@ def fetch_usage():
     """Returns (data, error_msg, retry_after_seconds).
     retry_after_seconds is non-zero only on 429 with Retry-After header.
     """
-    global _login_attempted
+    global _login_attempted, _auth_fail_streak
     token = read_token()
     if not token:
-        if trigger_claude_login():
-            return None, "Claude 로그인 진행 중...", 0
-        return None, "토큰 없음 (claude login 필요)", 0
+        # Missing/unreadable token. Could be a genuine logout OR a transient
+        # read collision with Claude Code rewriting the creds file. Only act
+        # after a sustained streak so a single blip doesn't pop a console.
+        _auth_fail_streak += 1
+        if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
+            if trigger_claude_login():
+                return None, "Claude 로그인 진행 중...", 0
+            return None, "토큰 없음 (claude login 필요)", 0
+        return None, "토큰 확인 중…", 0
     req = urllib.request.Request(
         USAGE_URL,
         headers={
@@ -4907,12 +4919,18 @@ def fetch_usage():
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             _login_attempted = False
+            _auth_fail_streak = 0
             return json.loads(resp.read().decode("utf-8")), None, 0
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            if trigger_claude_login():
-                return None, "토큰 만료 → 재로그인 중...", 0
-            return None, "토큰 만료 (claude login)", 0
+            # Same sustained-failure gate: a transient 401 during a token
+            # refresh must not trigger an auto-login console.
+            _auth_fail_streak += 1
+            if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
+                if trigger_claude_login():
+                    return None, "토큰 만료 → 재로그인 중...", 0
+                return None, "토큰 만료 (claude login)", 0
+            return None, "인증 확인 중…", 0
         if e.code == 429:
             # Respect server's Retry-After (seconds)
             try:
