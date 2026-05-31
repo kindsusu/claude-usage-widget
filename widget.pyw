@@ -19,9 +19,7 @@ import ctypes
 from ctypes import wintypes
 import io
 import json
-import os
 import random
-import shutil
 import subprocess
 import sys
 import threading
@@ -4813,53 +4811,17 @@ def save_config(cfg):
 
 # ---------------- API ----------------
 
-_login_proc = None
-_login_attempted = False
 _auth_fail_streak = 0
-# Consecutive auth failures (missing token / 401 / 403) required before the
-# widget auto-launches `claude login`. A single transient failure — e.g. a
+# Consecutive auth failures (missing token / 401 / 403) before the widget
+# treats the token as genuinely stale. A single transient failure — e.g. a
 # read landing while Claude Code rewrites .credentials.json during a token
-# refresh — must NOT pop a console. Only a sustained failure should.
+# refresh — must NOT flip the status; only a sustained streak should.
+#
+# The widget never launches `claude login` itself: the on-disk token is
+# refreshed by Claude Code's own usage (it keeps a fresher in-memory token
+# and only periodically rewrites the file), so the widget just surfaces a
+# "log in via Claude Code" hint and auto-recovers on the next good poll.
 AUTH_FAIL_THRESHOLD = 3
-
-
-def find_claude_exe():
-    """Locate the Claude Code executable across common Windows install layouts."""
-    p = shutil.which("claude")
-    if p:
-        return p
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        base = Path(appdata) / "Claude" / "claude-code"
-        if base.exists():
-            versions = sorted(base.glob("*/claude.exe"),
-                              key=lambda x: x.stat().st_mtime, reverse=True)
-            if versions:
-                return str(versions[0])
-        npm_cmd = Path(appdata) / "npm" / "claude.cmd"
-        if npm_cmd.exists():
-            return str(npm_cmd)
-    return None
-
-
-def trigger_claude_login():
-    """Spawn `claude login` in a new console (once per session until success).
-    Returns True if a login process was started or is already running."""
-    global _login_proc, _login_attempted
-    if _login_proc is not None and _login_proc.poll() is None:
-        return True
-    if _login_attempted:
-        return False
-    exe = find_claude_exe()
-    if not exe:
-        return False
-    try:
-        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        _login_proc = subprocess.Popen([exe, "login"], creationflags=flags)
-        _login_attempted = True
-        return True
-    except Exception:
-        return False
 
 
 def read_token():
@@ -4895,17 +4857,15 @@ def fetch_usage():
     """Returns (data, error_msg, retry_after_seconds).
     retry_after_seconds is non-zero only on 429 with Retry-After header.
     """
-    global _login_attempted, _auth_fail_streak
+    global _auth_fail_streak
     token = read_token()
     if not token:
         # Missing/unreadable token. Could be a genuine logout OR a transient
-        # read collision with Claude Code rewriting the creds file. Only act
-        # after a sustained streak so a single blip doesn't pop a console.
+        # read collision with Claude Code rewriting the creds file. Only flip
+        # the status after a sustained streak so a single blip is ignored.
         _auth_fail_streak += 1
         if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
-            if trigger_claude_login():
-                return None, "Claude 로그인 진행 중...", 0
-            return None, "토큰 없음 (claude login 필요)", 0
+            return None, "로그인 필요 · Claude Code에서 /login", 0
         return None, "토큰 확인 중…", 0
     req = urllib.request.Request(
         USAGE_URL,
@@ -4918,18 +4878,16 @@ def fetch_usage():
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            _login_attempted = False
             _auth_fail_streak = 0
             return json.loads(resp.read().decode("utf-8")), None, 0
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            # Same sustained-failure gate: a transient 401 during a token
-            # refresh must not trigger an auto-login console.
+            # Stale on-disk token (Claude Code refreshes it in-memory and only
+            # periodically rewrites the file). Surface a hint after a sustained
+            # streak; recover automatically once a fresh token lands on disk.
             _auth_fail_streak += 1
             if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
-                if trigger_claude_login():
-                    return None, "토큰 만료 → 재로그인 중...", 0
-                return None, "토큰 만료 (claude login)", 0
+                return None, "토큰 만료 · Claude Code에서 /login", 0
             return None, "인증 확인 중…", 0
         if e.code == 429:
             # Respect server's Retry-After (seconds)
