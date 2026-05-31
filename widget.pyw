@@ -4825,10 +4825,13 @@ AUTH_FAIL_THRESHOLD = 3
 
 
 def read_token():
+    """Return (access_token, expires_at_ms). Either may be None when the
+    credentials file is missing or momentarily unreadable."""
     try:
-        return json.loads(CREDS_PATH.read_text(encoding="utf-8")).get("claudeAiOauth", {}).get("accessToken")
+        oauth = json.loads(CREDS_PATH.read_text(encoding="utf-8")).get("claudeAiOauth", {})
+        return oauth.get("accessToken"), oauth.get("expiresAt")
     except Exception:
-        return None
+        return None, None
 
 
 def detect_plan_label():
@@ -4858,7 +4861,7 @@ def fetch_usage():
     retry_after_seconds is non-zero only on 429 with Retry-After header.
     """
     global _auth_fail_streak
-    token = read_token()
+    token, expires_at = read_token()
     if not token:
         # Missing/unreadable token. Could be a genuine logout OR a transient
         # read collision with Claude Code rewriting the creds file. Only flip
@@ -4867,6 +4870,16 @@ def fetch_usage():
         if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
             return None, "로그인 필요 · Claude Code에서 /login", 0
         return None, "토큰 확인 중…", 0
+    # The stored token is already expired -> skip the network call entirely.
+    # Claude Code keeps a fresher token in memory and only periodically
+    # rewrites the file, so an expired on-disk token would only 401; hammering
+    # the endpoint with a dead token just feeds the rate-limiter and can keep
+    # the whole token in a perpetual 429. Wait locally (no network) for a
+    # refreshed token to land on disk; recovery is immediate once it does.
+    if expires_at:
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+        if expires_at <= now_ms:
+            return None, "토큰 만료 · Claude Code에서 /login", 0
     req = urllib.request.Request(
         USAGE_URL,
         headers={
