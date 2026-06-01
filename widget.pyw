@@ -4834,6 +4834,72 @@ def read_token():
         return None, None
 
 
+# OAuth refresh — public client_id, identical for every Claude Code install.
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+_refresh_lock = threading.Lock()
+
+
+def refresh_token():
+    """Use the stored refresh_token to obtain a fresh access_token and write
+    it back to .credentials.json. Returns (access_token, expires_at_ms) on
+    success, or (None, None) on failure.
+
+    Handles refresh-token rotation: the response usually contains a NEW
+    refresh_token that must be persisted, or the next refresh 400s.
+    Re-reads the file inside the lock so we never clobber a token Claude
+    Code itself just rotated.
+    """
+    with _refresh_lock:
+        try:
+            creds = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return None, None
+        oauth = creds.get("claudeAiOauth", {})
+        rtok = oauth.get("refreshToken")
+        if not rtok:
+            return None, None
+
+        # If another thread/Claude Code already refreshed while we waited for
+        # the lock, just use the fresh on-disk token.
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+        if oauth.get("accessToken") and oauth.get("expiresAt", 0) > now_ms + 30_000:
+            return oauth["accessToken"], oauth["expiresAt"]
+
+        body = json.dumps({
+            "grant_type": "refresh_token",
+            "refresh_token": rtok,
+            "client_id": OAUTH_CLIENT_ID,
+        }).encode()
+        req = urllib.request.Request(
+            OAUTH_TOKEN_URL, data=body, method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "claude-usage-widget/2.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read().decode("utf-8"))
+        except Exception:
+            return None, None
+
+        access = data.get("access_token")
+        if not access:
+            return None, None
+        expires_at = int(now_ms) + int(data.get("expires_in", 28800)) * 1000
+        oauth["accessToken"] = access
+        oauth["refreshToken"] = data.get("refresh_token", rtok)  # rotation-safe
+        oauth["expiresAt"] = expires_at
+        creds["claudeAiOauth"] = oauth
+        try:
+            CREDS_PATH.write_text(json.dumps(creds, indent=2), encoding="utf-8")
+        except Exception:
+            pass  # token still usable in-memory even if write fails
+        return access, expires_at
+
+
 def detect_plan_label():
     """Read subscription tier from local credentials, return display label."""
     try:
@@ -4870,16 +4936,21 @@ def fetch_usage():
         if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
             return None, "로그인 필요 · Claude Code에서 /login", 0
         return None, "토큰 확인 중…", 0
-    # The stored token is already expired -> skip the network call entirely.
-    # Claude Code keeps a fresher token in memory and only periodically
-    # rewrites the file, so an expired on-disk token would only 401; hammering
-    # the endpoint with a dead token just feeds the rate-limiter and can keep
-    # the whole token in a perpetual 429. Wait locally (no network) for a
-    # refreshed token to land on disk; recovery is immediate once it does.
+    # Stored token expired (or about to) -> refresh it ourselves via the
+    # OAuth refresh_token grant before calling the usage endpoint. This avoids
+    # 401s (which feed the rate limiter) and removes the need to run Claude
+    # Code just to mint a fresh token.
     if expires_at:
         now_ms = datetime.now(timezone.utc).timestamp() * 1000
-        if expires_at <= now_ms:
-            return None, "토큰 만료 · Claude Code에서 /login", 0
+        if expires_at <= now_ms + 60_000:  # refresh 60s before expiry
+            new_token, new_exp = refresh_token()
+            if new_token:
+                token = new_token
+            else:
+                _auth_fail_streak += 1
+                if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
+                    return None, "토큰 갱신 실패 · Claude Code에서 /login", 0
+                return None, "토큰 갱신 중…", 0
     req = urllib.request.Request(
         USAGE_URL,
         headers={
@@ -4895,9 +4966,22 @@ def fetch_usage():
             return json.loads(resp.read().decode("utf-8")), None, 0
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            # Stale on-disk token (Claude Code refreshes it in-memory and only
-            # periodically rewrites the file). Surface a hint after a sustained
-            # streak; recover automatically once a fresh token lands on disk.
+            # Token rejected despite not looking expired locally. Try one
+            # refresh, then retry the usage call once.
+            new_token, _ = refresh_token()
+            if new_token:
+                try:
+                    req2 = urllib.request.Request(USAGE_URL, headers={
+                        "Authorization": f"Bearer {new_token}",
+                        "anthropic-beta": "oauth-2025-04-20",
+                        "Accept": "application/json",
+                        "User-Agent": "claude-usage-widget/2.0",
+                    })
+                    with urllib.request.urlopen(req2, timeout=10) as resp2:
+                        _auth_fail_streak = 0
+                        return json.loads(resp2.read().decode("utf-8")), None, 0
+                except Exception:
+                    pass
             _auth_fail_streak += 1
             if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
                 return None, "토큰 만료 · Claude Code에서 /login", 0
