@@ -23,7 +23,7 @@ Always-on-top Windows desktop widget showing real-time Claude Max plan usage. Ma
 - [Claude Code](https://claude.com/code) installed and logged in (`claude login`)
 - `pip install pillow pystray`
 
-The widget reads the OAuth token Claude Code stores in `~/.claude/.credentials.json` — no manual API key or cookie handling needed.
+The widget reads the OAuth token Claude Code stores in `~/.claude/.credentials.json` — no manual API key or cookie handling needed. It also **auto-refreshes the token** when it expires, so it keeps working without running Claude Code (see [Token handling](#token-handling-automatic)).
 
 ## Install
 
@@ -98,9 +98,23 @@ Click the **X** on the widget to minimize it to the system tray (it does **not**
 - **Tray icon right-click** → menu (Show/Hide, Refresh now, Quit)
 - The only way to fully quit is the **Quit** item in the tray menu
 
-## Token expiry
+## Token handling (automatic)
 
-If you see "토큰 만료 (claude login)" in the footer, just run `claude login` in any terminal — the widget will pick up the refreshed token within one polling cycle.
+The widget refreshes its own access token, so you normally **never** have to touch it:
+
+- The OAuth **access token** lives ~8 hours. When it expires, the widget POSTs the stored **refresh token** to `platform.claude.com/v1/oauth/token` (public Claude Code `client_id`) and writes the rotated tokens back to `~/.claude/.credentials.json`.
+- This works even if **Claude Code isn't running** and even after the **computer was powered off for days/weeks** — on next launch the widget just mints a fresh token from the refresh token.
+- The token refresh endpoint is **separate** from the usage endpoint's rate limit, so auto-refresh never contributes to the `API limit` 429s.
+- Refresh-token **rotation** is handled correctly (the new refresh token from each response is persisted).
+
+### When you *do* need to act
+
+The only time manual action is needed is if the **refresh token itself** becomes invalid — which is rare (lasts months to a year):
+
+- Very long inactivity (months)
+- Password change / sign-out elsewhere / Anthropic security revocation
+
+Then the footer shows **"토큰 갱신 실패 · Claude Code에서 /login"** — just run `claude login` (or `/login` inside Claude Code) once and the widget recovers on the next poll.
 
 ## For AI agents (Claude Code, etc.)
 
@@ -179,7 +193,7 @@ $shortcut.Save()
 |---|---|---|
 | Widget process starts but no window visible | `widget_config.json` has off-screen `x`/`y` | Delete `widget_config.json` and relaunch |
 | Pet (image) doesn't show | Old PIL or wrong widget version | `pip install --upgrade pillow`, ensure widget.pyw is fresh from this repo |
-| Footer shows "토큰 만료" or "토큰 없음" | OAuth token missing/expired | User runs `claude login` |
+| Footer shows "토큰 갱신 실패" | refresh token invalid (rare) | User runs `claude login` once |
 | Footer shows "API rate limited" | Too many polls in short time | Wait 5–10 min; widget auto-backs-off |
 | Title bar shows `●` instead of pet | `ImageTk.PhotoImage` called before `tk.Tk()` | Bug in older version — pull latest |
 
