@@ -19,6 +19,7 @@ import ctypes
 from ctypes import wintypes
 import io
 import json
+import os
 import random
 import subprocess
 import sys
@@ -4838,6 +4839,10 @@ def read_token():
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 _refresh_lock = threading.Lock()
+# A refresh_token the server permanently rejected (400/401/403 = rotated away
+# or revoked). Remembered so we stop POSTing a known-dead grant every poll;
+# cleared when a re-login writes a DIFFERENT refreshToken to disk.
+_dead_refresh_token = None
 
 
 def refresh_token():
@@ -4850,6 +4855,7 @@ def refresh_token():
     Re-reads the file inside the lock so we never clobber a token Claude
     Code itself just rotated.
     """
+    global _dead_refresh_token
     with _refresh_lock:
         try:
             creds = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
@@ -4865,6 +4871,12 @@ def refresh_token():
         now_ms = datetime.now(timezone.utc).timestamp() * 1000
         if oauth.get("accessToken") and oauth.get("expiresAt", 0) > now_ms + 30_000:
             return oauth["accessToken"], oauth["expiresAt"]
+
+        # This grant already failed permanently; don't hammer the token
+        # endpoint with it every poll. A re-login rewrites refreshToken,
+        # which makes rtok differ from the remembered dead value.
+        if rtok == _dead_refresh_token:
+            return None, None
 
         body = json.dumps({
             "grant_type": "refresh_token",
@@ -4882,19 +4894,28 @@ def refresh_token():
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 401, 403):
+                _dead_refresh_token = rtok  # permanent: invalid/rotated grant
+            return None, None  # other codes (429/5xx) are transient — retry later
         except Exception:
-            return None, None
+            return None, None  # network error — transient, retry later
 
         access = data.get("access_token")
         if not access:
             return None, None
+        _dead_refresh_token = None
         expires_at = int(now_ms) + int(data.get("expires_in", 28800)) * 1000
         oauth["accessToken"] = access
         oauth["refreshToken"] = data.get("refresh_token", rtok)  # rotation-safe
         oauth["expiresAt"] = expires_at
         creds["claudeAiOauth"] = oauth
+        # Atomic write: a crash mid-write must never corrupt the credentials
+        # file shared with Claude Code (that would break login for everything).
         try:
-            CREDS_PATH.write_text(json.dumps(creds, indent=2), encoding="utf-8")
+            tmp = CREDS_PATH.with_name(CREDS_PATH.name + ".tmp")
+            tmp.write_text(json.dumps(creds, indent=2), encoding="utf-8")
+            os.replace(tmp, CREDS_PATH)
         except Exception:
             pass  # token still usable in-memory even if write fails
         return access, expires_at
