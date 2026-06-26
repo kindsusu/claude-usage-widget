@@ -21,6 +21,8 @@ import io
 import json
 import os
 import random
+import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -4812,6 +4814,50 @@ def save_config(cfg):
 
 # ---------------- API ----------------
 
+def find_claude_exe():
+    """Locate the npm-installed Claude Code launcher that supports the
+    `auth login` subcommand. Returns a path string or None.
+
+    Prefer claude.cmd (npm shim) over the Desktop-bundled claude.exe: the
+    Desktop binary historically treated `login` as a chat prompt, while the
+    npm CLI exposes the proper `claude auth login` subcommand."""
+    appdata = os.environ.get("APPDATA", "")
+    candidates = []
+    if appdata:
+        candidates.append(Path(appdata) / "npm" / "claude.cmd")
+        candidates.append(Path(appdata) / "npm" / "node_modules"
+                          / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe")
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    p = shutil.which("claude")
+    return p
+
+
+def launch_claude_login():
+    """Open a visible console running `claude auth login` so the user can
+    complete the browser OAuth flow. Returns True if launched."""
+    exe = find_claude_exe()
+    if not exe:
+        return False
+    try:
+        if exe.lower().endswith(".cmd"):
+            # cmd /k keeps the window open so the user sees login progress/errors
+            subprocess.Popen(
+                f'cmd /k ""{exe}" auth login"',
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                shell=True,
+            )
+        else:
+            subprocess.Popen(
+                [exe, "auth", "login"],
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+        return True
+    except Exception:
+        return False
+
+
 _auth_fail_streak = 0
 # Consecutive auth failures (missing token / 401 / 403) before the widget
 # treats the token as genuinely stale. A single transient failure — e.g. a
@@ -4955,7 +5001,7 @@ def fetch_usage():
         # the status after a sustained streak so a single blip is ignored.
         _auth_fail_streak += 1
         if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
-            return None, "로그인 필요 · Claude Code에서 /login", 0
+            return None, "LOGIN_REQUIRED", 0
         return None, "토큰 확인 중…", 0
     # Stored token expired (or about to) -> refresh it ourselves via the
     # OAuth refresh_token grant before calling the usage endpoint. This avoids
@@ -4970,7 +5016,7 @@ def fetch_usage():
             else:
                 _auth_fail_streak += 1
                 if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
-                    return None, "토큰 갱신 실패 · Claude Code에서 /login", 0
+                    return None, "LOGIN_REQUIRED", 0
                 return None, "토큰 갱신 중…", 0
     req = urllib.request.Request(
         USAGE_URL,
@@ -5005,7 +5051,7 @@ def fetch_usage():
                     pass
             _auth_fail_streak += 1
             if _auth_fail_streak >= AUTH_FAIL_THRESHOLD:
-                return None, "토큰 만료 · Claude Code에서 /login", 0
+                return None, "LOGIN_REQUIRED", 0
             return None, "인증 확인 중…", 0
         if e.code == 429:
             # Respect server's Retry-After (seconds)
@@ -5067,6 +5113,8 @@ class Widget:
         self._alpha_popup = None
         self._visible = True
         self.tray_icon = None
+        self._login_dialog = None
+        self._login_poll_attempts = 0
 
         self.root = tk.Tk()
 
@@ -5516,6 +5564,11 @@ class Widget:
     def _render(self, data, err, retry_after=0):
         self.fetching = False
         if err or not data:
+            if err == "LOGIN_REQUIRED":
+                self._consec_429 = 0
+                self.footer_lbl.config(text="로그인 필요 · 클릭", fg=self.theme["danger"])
+                self._prompt_login()
+                return
             if err and ("429" in err or "rate limited" in err.lower()):
                 self._consec_429 += 1
                 if retry_after > 0:
@@ -5593,6 +5646,88 @@ class Widget:
     def _tick(self):
         self.refresh()
         self._schedule_refresh()
+
+    # ----- Login prompt -----
+
+    def _prompt_login(self):
+        """Pop a small dialog when the refresh token is dead. The user clicks
+        '로그인' and we open a console running `claude auth login`. Shown at most
+        once until dismissed/resolved so the poll loop doesn't spam it."""
+        if getattr(self, "_login_dialog", None) is not None:
+            try:
+                if self._login_dialog.winfo_exists():
+                    return  # already open
+            except Exception:
+                pass
+        t = self.theme
+        dlg = tk.Toplevel(self.root)
+        self._login_dialog = dlg
+        dlg.title("Claude 로그인")
+        dlg.configure(bg=t["bg"])
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+
+        tk.Label(dlg, text="로그인이 만료되었습니다",
+                 bg=t["bg"], fg=t["fg"],
+                 font=("Segoe UI", 10, "bold")).pack(padx=18, pady=(16, 4))
+        tk.Label(dlg,
+                 text="아래 버튼을 누르면 로그인 창이 열립니다.\n브라우저에서 로그인하면 위젯이 다시 작동합니다.",
+                 bg=t["bg"], fg=t["dim"], font=("Segoe UI", 8),
+                 justify="center").pack(padx=18, pady=(0, 12))
+
+        btn_row = tk.Frame(dlg, bg=t["bg"])
+        btn_row.pack(pady=(0, 16))
+
+        def do_login():
+            ok = launch_claude_login()
+            dlg.destroy()
+            self._login_dialog = None
+            if ok:
+                self.footer_lbl.config(text="로그인 창에서 진행하세요…", fg=t["dim"])
+                self._auth_retry_after_login()
+            else:
+                self.footer_lbl.config(
+                    text="claude 실행 못 찾음 · 수동 claude auth login",
+                    fg=t["danger"])
+
+        def later():
+            dlg.destroy()
+            self._login_dialog = None
+
+        tk.Button(btn_row, text="로그인", command=do_login,
+                  bg=t["accent"], fg="white", relief="flat",
+                  font=("Segoe UI", 9, "bold"), padx=18, pady=4,
+                  cursor="hand2", activebackground=t["accent"],
+                  activeforeground="white").pack(side="left", padx=4)
+        tk.Button(btn_row, text="나중에", command=later,
+                  bg=t["bar_bg"], fg=t["fg"], relief="flat",
+                  font=("Segoe UI", 9), padx=14, pady=4,
+                  cursor="hand2").pack(side="left", padx=4)
+
+        # Center over the widget
+        dlg.update_idletasks()
+        wx = self.root.winfo_x() + self.root.winfo_width() // 2 - dlg.winfo_width() // 2
+        wy = self.root.winfo_y() + 40
+        dlg.geometry(f"+{max(0, wx)}+{max(0, wy)}")
+
+    def _auth_retry_after_login(self):
+        """After launching login, poll the credentials file for a fresh token
+        and refresh the widget once it lands (up to ~3 min)."""
+        global _auth_fail_streak
+        attempts = getattr(self, "_login_poll_attempts", 0)
+        if attempts > 36:  # 36 * 5s = 3 min give-up
+            self._login_poll_attempts = 0
+            return
+        self._login_poll_attempts = attempts + 1
+        token, expires_at = read_token()
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+        if token and expires_at and expires_at > now_ms:
+            # fresh token landed
+            self._login_poll_attempts = 0
+            _auth_fail_streak = 0
+            self.refresh()
+            return
+        self.root.after(5000, self._auth_retry_after_login)
 
     # ----- Tray -----
 
