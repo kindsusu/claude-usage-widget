@@ -4831,7 +4831,19 @@ def find_claude_exe():
         if c.exists():
             return str(c)
     p = shutil.which("claude")
-    return p
+    if p:
+        return p
+    # Fall back to the Desktop-bundled CLI (%APPDATA%\Claude\claude-code\<ver>\
+    # claude.exe) — present when only the Claude desktop app is installed and
+    # `claude` is not on PATH. Newer builds accept `auth login` here too.
+    if appdata:
+        base = Path(appdata) / "Claude" / "claude-code"
+        if base.exists():
+            versions = sorted(base.glob("*/claude.exe"),
+                              key=lambda x: x.stat().st_mtime, reverse=True)
+            if versions:
+                return str(versions[0])
+    return None
 
 
 def launch_claude_login():
@@ -4889,6 +4901,10 @@ _refresh_lock = threading.Lock()
 # or revoked). Remembered so we stop POSTing a known-dead grant every poll;
 # cleared when a re-login writes a DIFFERENT refreshToken to disk.
 _dead_refresh_token = None
+# Epoch-ms before which we must NOT POST the token endpoint again. Set when a
+# refresh returns 429/5xx (transient) so we back off instead of re-POSTing
+# every 180s poll — which would itself keep the token endpoint rate-limited.
+_refresh_backoff_until = 0.0
 
 
 def refresh_token():
@@ -4901,7 +4917,7 @@ def refresh_token():
     Re-reads the file inside the lock so we never clobber a token Claude
     Code itself just rotated.
     """
-    global _dead_refresh_token
+    global _dead_refresh_token, _refresh_backoff_until
     with _refresh_lock:
         try:
             creds = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
@@ -4924,6 +4940,11 @@ def refresh_token():
         if rtok == _dead_refresh_token:
             return None, None
 
+        # Backing off after a transient 429/5xx — re-POSTing now would only
+        # keep the token endpoint rate-limited. Wait out the window.
+        if now_ms < _refresh_backoff_until:
+            return None, None
+
         body = json.dumps({
             "grant_type": "refresh_token",
             "refresh_token": rtok,
@@ -4943,7 +4964,15 @@ def refresh_token():
         except urllib.error.HTTPError as e:
             if e.code in (400, 401, 403):
                 _dead_refresh_token = rtok  # permanent: invalid/rotated grant
-            return None, None  # other codes (429/5xx) are transient — retry later
+            elif e.code == 429 or e.code >= 500:
+                # Transient, but back off so we don't re-POST every poll and
+                # keep the endpoint rate-limited. Respect Retry-After; else 15m.
+                try:
+                    retry_s = int(e.headers.get("Retry-After", "0") or 0)
+                except (TypeError, ValueError):
+                    retry_s = 0
+                _refresh_backoff_until = now_ms + max(retry_s, 900) * 1000
+            return None, None
         except Exception:
             return None, None  # network error — transient, retry later
 
@@ -4951,6 +4980,7 @@ def refresh_token():
         if not access:
             return None, None
         _dead_refresh_token = None
+        _refresh_backoff_until = 0.0
         expires_at = int(now_ms) + int(data.get("expires_in", 28800)) * 1000
         oauth["accessToken"] = access
         oauth["refreshToken"] = data.get("refresh_token", rtok)  # rotation-safe
