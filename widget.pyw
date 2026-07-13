@@ -5397,6 +5397,9 @@ class Widget:
         def S(v):
             return int(round(v * ms))
 
+        # No capsule/background: batteries + labels float directly over the
+        # desktop (true per-pixel translucency is impossible in tkinter —
+        # would require an UpdateLayeredWindow rewrite; user chose no-bg).
         s_pct, w_pct = self._mini_pcts
 
         # Theme-aware label colors so the floating S/W letters stay readable
