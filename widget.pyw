@@ -55,6 +55,8 @@ DEFAULT_CONFIG = {
     "theme": "light",
     "pet": None,
     "ui_scale": 1.0,  # baseline; user can override via menu (1.0 / 1.3 / 1.5 / 2.0)
+    "minimized": False,  # iPhone-battery mini mode
+    "mini_scale": 1.0,  # independent mini-mode size, adjustable live
 }
 
 # Keys that never persist to widget_config.json — changes via the prompt
@@ -4506,6 +4508,27 @@ def bar_color(pct):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+# Mini-battery palette (fixed, theme-independent)
+MINI_SESSION_FILL = "#a6e3a1"   # pastel green (session)
+MINI_WEEKLY_FILL  = "#89b4fa"   # pastel blue (weekly)
+MINI_LOW_FILL     = "#f38ba8"   # pastel red when remaining <= 20
+# transparentcolor keys for the floating strip — theme-aware so ClearType
+# fringes on the floating S/W labels blend toward the desktop brightness
+# (the near-black key put a dark outline around the letters in light theme).
+MINI_TRANS_KEY_DARK  = "#010203"
+MINI_TRANS_KEY_LIGHT = "#fdfdfb"   # near-white: fringes go light, invisible
+
+
+def _rounded_rect(canvas, x, y, w, h, r, **kw):
+    """Draw a rounded rectangle on a tkinter Canvas via a smoothed polygon.
+    tkinter has no native rounded-rect; a smooth polygon of the corner
+    points approximates the iOS battery body cleanly."""
+    p = [x + r, y, x + w - r, y, x + w, y, x + w, y + r,
+         x + w, y + h - r, x + w, y + h, x + w - r, y + h,
+         x + r, y + h, x, y + h, x, y + h - r, x, y + r, x, y]
+    return canvas.create_polygon(p, smooth=True, **kw)
+
+
 # ---------------- Circle slider ----------------
 
 class CircleSlider:
@@ -5145,6 +5168,8 @@ class Widget:
         self.tray_icon = None
         self._login_dialog = None
         self._login_poll_attempts = 0
+        self.minimized = bool(self.cfg.get("minimized"))
+        self._mini_pcts = (0.0, 0.0)
 
         self.root = tk.Tk()
 
@@ -5200,6 +5225,10 @@ class Widget:
         self._bind_drag()
         self._bind_menu()
         self.root.bind_all("<Button-1>", self._on_global_click, add="+")
+        # Double-click the mini strip restores the full card.
+        self.root.bind("<Double-Button-1>", self._on_double_click, add="+")
+        if self.minimized:
+            self._set_minimized(True, save=False)
 
         self.root.after(80, lambda: set_window_zorder(self._hwnd(), "top"))
 
@@ -5252,6 +5281,12 @@ class Widget:
         # X = minimize to tray (full quit via tray menu only)
         self.close_btn.bind("<Button-1>", lambda e: self.hide_to_tray())
 
+        # Minimize to battery strip (▾). Sits between ◐ and ✕.
+        self.min_btn = tk.Label(title_bar, text="▾", cursor="hand2",
+                                  font=("Segoe UI", 10), padx=3)
+        self.min_btn.pack(side="right")
+        self.min_btn.bind("<Button-1>", lambda e: self._toggle_minimize())
+
         self.alpha_btn = tk.Label(title_bar, text="◐", cursor="hand2",
                                     font=("Segoe UI", 10), padx=3)
         self.alpha_btn.pack(side="right")
@@ -5293,6 +5328,18 @@ class Widget:
                                      font=("Segoe UI", 7), anchor="w")
         self.footer_lbl.pack(fill="x", pady=(5, 0))
 
+        # Minimized "battery" strip — built now, packed only in mini mode.
+        s = self._ui_scale
+        ms = self._ui_scale * float(self.cfg.get("mini_scale", 1.0))
+        self.mini_frame = tk.Frame(self.root, padx=int(round(6 * s)),
+                                    pady=int(round(4 * s)))
+        self.mini_canvas = tk.Canvas(
+            self.mini_frame,
+            width=int(round(156 * ms)), height=int(round(40 * ms)),
+            highlightthickness=0, bd=0,
+        )
+        self.mini_canvas.pack()
+
     def _apply_theme(self):
         t = self.theme
         self.root.configure(bg=t["bg"])
@@ -5305,6 +5352,7 @@ class Widget:
             self.pet_lbl.configure(fg=t["accent"])
         self.close_btn.configure(bg=t["bg"], fg=t["btn"])
         self.alpha_btn.configure(bg=t["bg"], fg=t["btn"])
+        self.min_btn.configure(bg=t["bg"], fg=t["btn"])
         self.theme_btn.configure(bg=t["bg"], fg=t["btn"],
                                   text="☀" if self.theme_name == "dark" else "☾")
         for w in (self.session_pct_lbl, self.weekly_pct_lbl, self.sonnet_pct_lbl):
@@ -5314,6 +5362,14 @@ class Widget:
         for c in (self.session_canvas, self.weekly_canvas, self.sonnet_canvas):
             c.configure(bg=t["bar_bg"])
         self.footer_lbl.configure(bg=t["bg"], fg=t["muted"])
+        # Mini strip floats transparent while minimized — only repaint it with
+        # the theme bg when it's NOT minimized (else keep the theme's
+        # transparent key so the transparentcolor keying still hides the
+        # background; _toggle_theme re-runs _set_minimized to swap keys).
+        if not self.minimized:
+            self.mini_frame.configure(bg=t["bg"])
+            self.mini_canvas.configure(bg=t["bg"])
+        self._draw_mini()
 
     def _draw_bar(self, canvas, pct):
         canvas.delete("all")
@@ -5321,12 +5377,144 @@ class Widget:
         canvas.create_rectangle(0, 0, fill_w, BAR_HEIGHT,
                                   fill=bar_color(pct), outline="")
 
+    # ----- Minimized battery strip -----
+
+    def _draw_mini(self):
+        """Render two iPhone-style batteries (session, weekly) on mini_canvas.
+        Batteries show REMAINING capacity with fixed pastel colors that turn
+        red when the remaining charge drops to 20% or below."""
+        if not hasattr(self, "mini_canvas"):
+            return
+        c = self.mini_canvas
+        t = self.theme
+        # Independent mini scale over the DPI/ui scale; adjustable live.
+        ms = self._ui_scale * float(self.cfg.get("mini_scale", 1.0))
+        # Resize the canvas live so mini-scale changes apply without restart.
+        self.mini_canvas.config(width=int(round(156 * ms)),
+                                 height=int(round(40 * ms)))
+        c.delete("all")
+
+        def S(v):
+            return int(round(v * ms))
+
+        s_pct, w_pct = self._mini_pcts
+
+        # Theme-aware label colors so the floating S/W letters stay readable
+        # on both themes (dark-mode weekly was unreadable with the old blue).
+        if self.theme_name == "dark":
+            session_lbl, weekly_lbl = "#a6e3a1", "#89b4fa"
+        else:
+            session_lbl, weekly_lbl = "#5aa15d", "#2563eb"
+
+        # (label, label_color, base_fill, body_x, usage_pct)
+        groups = [
+            ("S", session_lbl, MINI_SESSION_FILL, 20, s_pct),
+            ("W", weekly_lbl, MINI_WEEKLY_FILL, 94, w_pct),
+        ]
+        for (label, lbl_color, base_fill, body_x_raw,
+             pct) in groups:
+            usage = max(0.0, min(100.0, float(pct or 0)))
+            remaining = max(0.0, min(100.0, 100.0 - usage))
+            # Scaled body box; the inner fill box is derived FROM it so the
+            # top/bottom (and left/right) margins stay symmetric at fractional
+            # scales instead of rounding S(13)/S(14) independently.
+            body_x = S(body_x_raw)
+            body_y = S(10)
+            body_w = S(48)
+            body_h = S(20)
+            inset = S(3)
+            fill_x = body_x + inset
+            fill_y = body_y + inset
+            fill_h = body_h - 2 * inset
+            fill_max_w = body_w - 2 * inset
+            # battery body — fg outline like the reference icon
+            _rounded_rect(c, body_x, body_y, body_w, body_h, S(6),
+                          fill=t["bar_bg"], outline=t["fg"], width=max(1, S(1)))
+            # chunky terminal nub on the right (derived from body_x)
+            _rounded_rect(c, body_x + S(49), S(15), S(4), S(10), S(2),
+                          fill=t["fg"], outline="")
+            # inner fill proportional to REMAINING capacity (squarish block)
+            if remaining > 0:
+                fw_px = max(S(3), int(round(fill_max_w * remaining / 100)))
+                fill_color = MINI_LOW_FILL if remaining <= 20 else base_fill
+                # Plain exact rectangle (sharp corners) so the top/bottom
+                # margins are pixel-symmetric; the smooth-polygon fill used to
+                # render a larger gap at the bottom than the top. Tk fills an
+                # outline-less rectangle only up to x2-1/y2-1 (bottom/right
+                # exclusive), so +1 on both to render the full intended box.
+                c.create_rectangle(fill_x, fill_y, fill_x + fw_px + 1,
+                                   fill_y + fill_h + 1,
+                                   fill=fill_color, outline="")
+            # floating S/W label OUTSIDE the battery, right-anchored a fixed
+            # S(6) before the body so the gap stays constant at any scale
+            # and the wide W glyph can never overlap the battery outline.
+            # No chip / halo — user accepts the desktop-blend tradeoff.
+            c.create_text(body_x - S(6), S(20), text=label, anchor="e",
+                          fill=lbl_color, font=("Segoe UI", 9, "bold"))
+            # % remaining text centered in body
+            txt_color = "#111827" if remaining >= 50 else t["fg"]
+            c.create_text(body_x + S(48) // 2, body_y + body_h // 2,
+                          text=f"{remaining:.0f}%", anchor="center",
+                          fill=txt_color, font=("Segoe UI", 8, "bold"))
+
+    def _trans_key(self):
+        """Theme-aware transparentcolor key for the floating mini strip."""
+        return (MINI_TRANS_KEY_DARK if self.theme_name == "dark"
+                else MINI_TRANS_KEY_LIGHT)
+
+    def _set_minimized(self, flag, save=True):
+        self.minimized = bool(flag)
+        # Always clear any previously-set transparent color key first. Older
+        # builds keyed the strip out via -transparentcolor and may have saved
+        # minimized=True; this guarantees the opaque strip renders normally.
+        try:
+            self.root.attributes("-transparentcolor", "")
+        except Exception:
+            pass
+        if self.minimized:
+            self.outer.pack_forget()
+            # v2-style floating strip: key the background out via
+            # -transparentcolor so only the batteries + labels show over the
+            # desktop (no capsule). Tradeoff: the transparent gaps between
+            # batteries are click-through — user chose transparency.
+            key = self._trans_key()
+            self.root.configure(bg=key)
+            self.mini_frame.configure(bg=key)
+            self.mini_canvas.configure(bg=key)
+            self.mini_frame.pack()
+            try:
+                self.root.attributes("-transparentcolor", key)
+            except Exception:
+                pass
+            self._draw_mini()
+        else:
+            self.root.configure(bg=self.theme["bg"])
+            self.mini_frame.pack_forget()
+            self.outer.pack()
+        if save:
+            self.cfg["minimized"] = self.minimized
+            save_config(self.cfg)
+        if hasattr(self, "mini_var"):
+            self.mini_var.set(self.minimized)
+
+    def _toggle_minimize(self):
+        self._set_minimized(not self.minimized)
+
+    def _on_double_click(self, _e):
+        if self.minimized:
+            self._set_minimized(False)
+
     def _toggle_theme(self):
         self.theme_name = "light" if self.theme_name == "dark" else "dark"
         self.theme = THEMES[self.theme_name]
         self.cfg["theme"] = self.theme_name
         save_config(self.cfg)
         self._apply_theme()
+        # While minimized, re-run the minimize path so the NEW theme's
+        # transparent key is applied to the bgs and -transparentcolor;
+        # otherwise old-key pixels stay opaque as a colored slab.
+        if self.minimized:
+            self._set_minimized(True, save=False)
         if hasattr(self, "_last_data") and self._last_data:
             self._render(self._last_data, None)
 
@@ -5436,6 +5624,11 @@ class Widget:
         self.menu = tk.Menu(self.root, tearoff=0, font=menu_font)
         self.menu.add_command(label="지금 새로고침", command=self.refresh)
         self.menu.add_separator()
+        self.mini_var = tk.BooleanVar(value=self.minimized)
+        self.menu.add_checkbutton(label="미니 모드 (배터리)",
+                                   variable=self.mini_var,
+                                   command=self._toggle_minimize)
+        self.menu.add_command(label="다크/라이트 전환", command=self._toggle_theme)
         self.smart_var = tk.BooleanVar(value=self.cfg.get("smart_topmost", True))
         self.menu.add_checkbutton(label="스마트 위 (Claude 활성 시만 위로)",
                                    variable=self.smart_var,
@@ -5452,6 +5645,15 @@ class Widget:
             scale_menu.add_command(label=f"{label}{mark}",
                                     command=lambda v=value: self._set_ui_scale(v))
         self.menu.add_cascade(label="UI 배율 (재시작 적용)", menu=scale_menu)
+        # Mini-size cascade — applies live (no restart) to the battery strip.
+        mini_current = self.cfg.get("mini_scale") or DEFAULT_CONFIG["mini_scale"]
+        mini_menu = tk.Menu(self.menu, tearoff=0, font=menu_font)
+        for label, value in (("0.8×", 0.8), ("1.0× (기본)", 1.0),
+                             ("1.2×", 1.2), ("1.5×", 1.5)):
+            mark = " ✓" if abs(value - mini_current) < 0.01 else ""
+            mini_menu.add_command(label=f"{label}{mark}",
+                                   command=lambda v=value: self._set_mini_scale(v))
+        self.menu.add_cascade(label="미니 크기", menu=mini_menu)
         self.menu.add_separator()
         self.menu.add_command(label="펫 다시 뽑기", command=self._reroll_pet)
         self.menu.add_separator()
@@ -5480,6 +5682,13 @@ class Widget:
         except Exception:
             pass
         self.quit()
+
+    def _set_mini_scale(self, scale):
+        """Persist a new mini-mode size and redraw the battery strip live —
+        no restart needed since _draw_mini resizes the canvas each call."""
+        self.cfg["mini_scale"] = scale
+        save_config(self.cfg)
+        self._draw_mini()
 
     def _reroll_pet(self):
         if not PETS_B64:
@@ -5647,6 +5856,9 @@ class Widget:
             text=f"업데이트 {datetime.now().strftime('%H:%M:%S')}  ·  우클릭=메뉴",
             fg=self.theme["muted"],
         )
+        # keep the battery strip in sync
+        self._mini_pcts = (s_pct, w_pct)
+        self._draw_mini()
 
     def _schedule_refresh(self):
         # Always schedule at the configured interval — no backoff, no
