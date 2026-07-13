@@ -5458,9 +5458,16 @@ class Widget:
                           fill=txt_color, font=("Segoe UI", 8, "bold"))
 
     def _trans_key(self):
-        """Theme-aware transparentcolor key for the floating mini strip."""
-        return (MINI_TRANS_KEY_DARK if self.theme_name == "dark"
-                else MINI_TRANS_KEY_LIGHT)
+        """Transparentcolor key for the floating mini strip — the LIGHT
+        (near-white) key in BOTH themes. Windows -transparentcolor
+        (LWA_COLORKEY) keys out EXACTLY this RGB, not a range, so the
+        near-white key never collides with dark theme's near-white fg
+        (#f3f4f6 != #fdfdfb — those pixels stay opaque). Using one light
+        key everywhere makes the floating S/W labels' ClearType fringe blend
+        toward white (invisible on light desktops) instead of the near-black
+        dark key, which drew a visible dark outline around the letters.
+        MINI_TRANS_KEY_DARK is retained for reference/fallback."""
+        return MINI_TRANS_KEY_LIGHT
 
     def _set_minimized(self, flag, save=True):
         self.minimized = bool(flag)
