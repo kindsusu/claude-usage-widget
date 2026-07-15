@@ -4812,6 +4812,27 @@ def set_window_zorder(hwnd, mode):
         pass
 
 
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x00000080
+_WS_EX_APPWINDOW = 0x00040000
+_user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_user32.GetWindowLongW.restype = ctypes.c_long
+_user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+_user32.SetWindowLongW.restype = ctypes.c_long
+
+
+def hide_from_taskbar(hwnd):
+    """Strip WS_EX_APPWINDOW / add WS_EX_TOOLWINDOW so the widget never gets
+    a taskbar button. overrideredirect alone is not reliable: Windows re-adds
+    the button after withdraw/deiconify cycles (tray hide/show)."""
+    try:
+        style = _user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+        style = (style & ~_WS_EX_APPWINDOW) | _WS_EX_TOOLWINDOW
+        _user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, style)
+    except Exception:
+        pass
+
+
 # ---------------- Config ----------------
 
 def load_config():
@@ -5230,7 +5251,10 @@ class Widget:
         if self.minimized:
             self._set_minimized(True, save=False)
 
-        self.root.after(80, lambda: set_window_zorder(self._hwnd(), "top"))
+        def _post_map_win32():
+            set_window_zorder(self._hwnd(), "top")
+            hide_from_taskbar(self._hwnd())
+        self.root.after(80, _post_map_win32)
 
         self._setup_tray()
 
@@ -5501,6 +5525,8 @@ class Widget:
             self.root.configure(bg=self.theme["bg"])
             self.mini_frame.pack_forget()
             self.outer.pack()
+        # attribute churn above can re-add the taskbar button
+        hide_from_taskbar(self._hwnd())
         if save:
             self.cfg["minimized"] = self.minimized
             save_config(self.cfg)
@@ -5747,6 +5773,7 @@ class Widget:
     def _prompt(self, key, title, cast, on_save=None, default=None):
         t = self.theme
         dlg = tk.Toplevel(self.root)
+        dlg.transient(self.root)  # no separate taskbar button
         dlg.title(title)
         dlg.attributes("-topmost", True)
         dlg.configure(bg=t["bg"])
@@ -5913,6 +5940,7 @@ class Widget:
                 pass
         t = self.theme
         dlg = tk.Toplevel(self.root)
+        dlg.transient(self.root)  # no separate taskbar button
         self._login_dialog = dlg
         dlg.title("Claude 로그인")
         dlg.configure(bg=t["bg"])
@@ -6024,6 +6052,8 @@ class Widget:
         self.root.attributes("-topmost", True)
         set_window_zorder(self._hwnd(), "top")
         self._current_z = "top"
+        # deiconify is the main trigger for Windows re-adding a taskbar button
+        hide_from_taskbar(self._hwnd())
 
     def quit(self):
         save_config(self.cfg)
