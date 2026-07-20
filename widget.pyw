@@ -5882,8 +5882,19 @@ class Widget:
         self.weekly_detail_lbl.config(
             text=f"{fmt_reset_local(w_reset)} 리셋" if w_reset else ""
         )
-        ss_pct = ss.get("utilization", 0) or 0
-        self.sonnet_pct_lbl.config(text=f"Sonnet 주간  {ss_pct:.0f}% 사용됨")
+        # Third row: model-scoped weekly limit. The API moved from fixed
+        # per-model fields (seven_day_sonnet, now null) to a generic `limits`
+        # array whose weekly_scoped entry names the model it applies to
+        # (e.g. display_name "Fable"). Prefer that; fall back to the legacy
+        # field for older API responses.
+        ss_label, ss_pct = "Sonnet", ss.get("utilization", 0) or 0
+        for lim in (data.get("limits") or []):
+            if lim.get("kind") == "weekly_scoped":
+                model = ((lim.get("scope") or {}).get("model") or {})
+                ss_label = model.get("display_name") or ss_label
+                ss_pct = lim.get("percent", 0) or 0
+                break
+        self.sonnet_pct_lbl.config(text=f"{ss_label} 주간  {ss_pct:.0f}% 사용됨")
         self._draw_bar(self.sonnet_canvas, ss_pct)
         plan = self._display_plan()
         if eu.get("is_enabled"):
