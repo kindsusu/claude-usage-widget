@@ -32,7 +32,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageFont, ImageDraw
 
 try:
     import pystray
@@ -4511,6 +4511,7 @@ def bar_color(pct):
 # Mini-battery palette (fixed, theme-independent)
 MINI_SESSION_FILL = "#a6e3a1"   # pastel green (session)
 MINI_WEEKLY_FILL  = "#89b4fa"   # pastel blue (weekly)
+MINI_FABLE_FILL   = "#cba6f7"   # pastel purple (Fable weekly-scoped)
 MINI_LOW_FILL     = "#f38ba8"   # pastel red when remaining <= 20
 # transparentcolor keys for the floating strip — theme-aware so ClearType
 # fringes on the floating S/W labels blend toward the desktop brightness
@@ -4760,6 +4761,37 @@ def load_pet_photo(pet_key, size=PET_SIZE, bg_tolerance=15):
         return ImageTk.PhotoImage(img)
     except Exception:
         return None
+
+
+_label_img_cache = {}
+
+
+def make_label_image(text, color_hex, px_size):
+    """Render bold text as a hard-edged RGBA image (no partial alpha), so
+    the floating labels never show ClearType fringe against the transparent
+    key, regardless of desktop brightness behind the strip."""
+    key = (text, color_hex, px_size)
+    img = _label_img_cache.get(key)
+    if img is not None:
+        return img
+    try:
+        font = ImageFont.truetype("segoeuib.ttf", px_size)   # Segoe UI Bold
+    except Exception:
+        font = ImageFont.load_default()
+    pad = 2
+    bbox = font.getbbox(text)
+    w = bbox[2] - bbox[0] + pad * 2
+    h = bbox[3] - bbox[1] + pad * 2
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.text((pad - bbox[0], pad - bbox[1]), text, font=font, fill=color_hex)
+    # Threshold alpha: every pixel fully opaque or fully transparent.
+    r, g, b, a = im.split()
+    a = a.point(lambda v: 255 if v >= 128 else 0)
+    im.putalpha(a)
+    photo = ImageTk.PhotoImage(im)
+    _label_img_cache[key] = photo   # cache keeps a strong ref (prevents GC)
+    return photo
 
 
 # ---------------- Win32 ----------------
@@ -5190,7 +5222,7 @@ class Widget:
         self._login_dialog = None
         self._login_poll_attempts = 0
         self.minimized = bool(self.cfg.get("minimized"))
-        self._mini_pcts = (0.0, 0.0)
+        self._mini_pcts = (0.0, 0.0, 0.0)
 
         self.root = tk.Tk()
 
@@ -5359,7 +5391,7 @@ class Widget:
                                     pady=int(round(4 * s)))
         self.mini_canvas = tk.Canvas(
             self.mini_frame,
-            width=int(round(156 * ms)), height=int(round(40 * ms)),
+            width=int(round(230 * ms)), height=int(round(40 * ms)),
             highlightthickness=0, bd=0,
         )
         self.mini_canvas.pack()
@@ -5414,7 +5446,7 @@ class Widget:
         # Independent mini scale over the DPI/ui scale; adjustable live.
         ms = self._ui_scale * float(self.cfg.get("mini_scale", 1.0))
         # Resize the canvas live so mini-scale changes apply without restart.
-        self.mini_canvas.config(width=int(round(156 * ms)),
+        self.mini_canvas.config(width=int(round(230 * ms)),
                                  height=int(round(40 * ms)))
         c.delete("all")
 
@@ -5424,19 +5456,21 @@ class Widget:
         # No capsule/background: batteries + labels float directly over the
         # desktop (true per-pixel translucency is impossible in tkinter —
         # would require an UpdateLayeredWindow rewrite; user chose no-bg).
-        s_pct, w_pct = self._mini_pcts
+        # Defensive: pad to 3 in case a stale 2-tuple lingers in state.
+        s_pct, w_pct, f_pct = (*self._mini_pcts, 0.0)[:3]
 
-        # Theme-aware label colors so the floating S/W letters stay readable
+        # Theme-aware label colors so the floating S/W/F letters stay readable
         # on both themes (dark-mode weekly was unreadable with the old blue).
         if self.theme_name == "dark":
-            session_lbl, weekly_lbl = "#a6e3a1", "#89b4fa"
+            session_lbl, weekly_lbl, fable_lbl = "#a6e3a1", "#89b4fa", "#cba6f7"
         else:
-            session_lbl, weekly_lbl = "#5aa15d", "#2563eb"
+            session_lbl, weekly_lbl, fable_lbl = "#5aa15d", "#2563eb", "#7c3aed"
 
         # (label, label_color, base_fill, body_x, usage_pct)
         groups = [
             ("S", session_lbl, MINI_SESSION_FILL, 20, s_pct),
             ("W", weekly_lbl, MINI_WEEKLY_FILL, 94, w_pct),
+            ("F", fable_lbl, MINI_FABLE_FILL, 168, f_pct),
         ]
         for (label, lbl_color, base_fill, body_x_raw,
              pct) in groups:
@@ -5472,12 +5506,17 @@ class Widget:
                 c.create_rectangle(fill_x, fill_y, fill_x + fw_px + 1,
                                    fill_y + fill_h + 1,
                                    fill=fill_color, outline="")
-            # floating S/W label OUTSIDE the battery, right-anchored a fixed
+            # floating S/W/F label OUTSIDE the battery, right-anchored a fixed
             # S(6) before the body so the gap stays constant at any scale
             # and the wide W glyph can never overlap the battery outline.
-            # No chip / halo — user accepts the desktop-blend tradeoff.
-            c.create_text(body_x - S(6), S(20), text=label, anchor="e",
-                          fill=lbl_color, font=("Segoe UI", 9, "bold"))
+            # Hard-edge PIL image (thresholded alpha) instead of create_text so
+            # there is no ClearType fringe blending toward the transparent key
+            # (which read as a white outline on dark desktops).
+            lbl_img = make_label_image(label, lbl_color, max(8, S(12)))  # 9pt ≈ 12px @96dpi
+            # +2 cancels make_label_image's built-in 2px transparent pad so the
+            # INKED right edge of every glyph sits exactly S(5) from the battery
+            # body's left edge — even gap for S/W/F at any scale.
+            c.create_image(body_x - S(5) + 2, S(20), image=lbl_img, anchor="e")
             # % remaining text centered in body
             txt_color = "#111827" if remaining >= 50 else t["fg"]
             c.create_text(body_x + S(48) // 2, body_y + body_h // 2,
@@ -5905,7 +5944,7 @@ class Widget:
             fg=self.theme["muted"],
         )
         # keep the battery strip in sync
-        self._mini_pcts = (s_pct, w_pct)
+        self._mini_pcts = (s_pct, w_pct, ss_pct)
         self._draw_mini()
 
     def _schedule_refresh(self):
