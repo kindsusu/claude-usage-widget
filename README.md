@@ -203,10 +203,6 @@ $shortcut.Save()
 - Do NOT bundle your own PETS_B64 unless rebuilding from `pets/` source images
 - Do NOT change the API endpoint or headers — `anthropic-beta: oauth-2025-04-20` is required
 
-## Credits
-
-Inspired by [INNO-HI/ClaudeUsageWidget](https://github.com/INNO-HI/ClaudeUsageWidget) (Node.js) — that repo was the key reference for finding the OAuth `usage` endpoint. This is a Python/tkinter port with a different UI and a few extra features (smart topmost, pets, theme toggle).
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
