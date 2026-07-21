@@ -50,7 +50,7 @@ DEFAULT_CONFIG = {
     "refresh_seconds": 180,
     "plan_label": "",  # empty = auto-detect from credentials
     "smart_topmost": True,
-    "claude_processes": ["claude.exe", "pythonw.exe"],
+    "claude_processes": ["claude.exe"],
     "alpha": 0.95,
     "theme": "light",
     "pet": None,
@@ -4802,6 +4802,16 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _SWP_NOMOVE = 0x0002
 _SWP_NOSIZE = 0x0001
 _SWP_NOACTIVATE = 0x0010
+_TH32CS_SNAPPROCESS = 0x00000002
+_MAX_PATH = 260
+
+# Terminal-host executables. Claude Code runs INSIDE a terminal, so when one of
+# these is the foreground window we walk its process tree to see if claude is a
+# descendant (mirrors the Codex usage widget's design).
+_TERMINAL_NAMES = frozenset({
+    "windowsterminal.exe", "wt.exe", "cmd.exe", "powershell.exe",
+    "pwsh.exe", "conhost.exe", "openconsole.exe",
+})
 
 _user32.SetWindowPos.argtypes = [
     ctypes.c_void_p, ctypes.c_void_p,
@@ -4811,28 +4821,111 @@ _user32.SetWindowPos.argtypes = [
 _user32.SetWindowPos.restype = ctypes.c_bool
 
 
-def get_foreground_process_name():
+def get_foreground_process():
+    """Return (name_lower, pid) of the foreground window's owning process, or
+    (None, None) on any failure. The PID lets callers recognize our OWN window
+    by identity instead of the generic pythonw.exe name (which matched every
+    Python app, e.g. the separate Codex usage widget)."""
     try:
         hwnd = _user32.GetForegroundWindow()
         if not hwnd:
-            return None
+            return (None, None)
         pid = wintypes.DWORD()
         _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if not pid.value:
-            return None
+            return (None, None)
         handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
         if not handle:
-            return None
+            return (None, None)
         try:
             buf = ctypes.create_unicode_buffer(512)
             size = wintypes.DWORD(512)
             if _kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-                return buf.value.rsplit("\\", 1)[-1].lower()
+                return (buf.value.rsplit("\\", 1)[-1].lower(), pid.value)
         finally:
             _kernel32.CloseHandle(handle)
     except Exception:
         pass
-    return None
+    return (None, None)
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * _MAX_PATH),
+    ]
+
+
+def _snapshot_processes():
+    """Return [(pid, ppid, name_lower), ...] for every process, or [] on any
+    failure. Uses CreateToolhelp32Snapshot so callers can walk the process tree
+    (e.g. find a Claude CLI running under a terminal host)."""
+    try:
+        _kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        _kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        _kernel32.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PROCESSENTRY32W)]
+        _kernel32.Process32FirstW.restype = wintypes.BOOL
+        _kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PROCESSENTRY32W)]
+        _kernel32.Process32NextW.restype = wintypes.BOOL
+        _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        _kernel32.CloseHandle.restype = wintypes.BOOL
+        snap = _kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == ctypes.c_void_p(-1).value:
+            return []
+        procs = []
+        try:
+            entry = _PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+            ok = _kernel32.Process32FirstW(snap, ctypes.byref(entry))
+            while ok:
+                procs.append((
+                    int(entry.th32ProcessID),
+                    int(entry.th32ParentProcessID),
+                    str(entry.szExeFile).rsplit("\\", 1)[-1].lower(),
+                ))
+                ok = _kernel32.Process32NextW(snap, ctypes.byref(entry))
+        finally:
+            _kernel32.CloseHandle(snap)
+        return procs
+    except Exception:
+        return []
+
+
+def claude_runs_under(fg_pid):
+    """True when a Claude process is a descendant of the foreground terminal
+    host `fg_pid`. Claude Code runs inside a terminal, so the foreground window
+    belongs to the terminal (cmd/WindowsTerminal/…), not to claude itself — walk
+    the process tree to find it."""
+    if not fg_pid:
+        return False
+    procs = _snapshot_processes()
+    if not procs:
+        return False
+    children = {}
+    name_of = {}
+    for pid, ppid, nm in procs:
+        children.setdefault(ppid, []).append(pid)
+        name_of[pid] = nm
+    seen = set()
+    pending = [fg_pid]
+    while pending:
+        cur = pending.pop()
+        for child in children.get(cur, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            if "claude" in name_of.get(child, ""):
+                return True
+            pending.append(child)
+    return False
 
 
 def set_window_zorder(hwnd, mode):
@@ -5210,6 +5303,17 @@ def fmt_reset_local(dt):
 class Widget:
     def __init__(self):
         self.cfg = load_config()
+        # One-time migration: older configs listed the generic "pythonw.exe" in
+        # claude_processes, which made smart-topmost trigger for EVERY Python
+        # app (the separate Codex usage widget, 규정봇, etc.). Self is now matched
+        # by PID, so strip the stale entry (write only when it was present).
+        _procs = self.cfg.get("claude_processes")
+        if isinstance(_procs, list) and any(
+                isinstance(p, str) and p.lower() == "pythonw.exe" for p in _procs):
+            self.cfg["claude_processes"] = [
+                p for p in _procs
+                if not (isinstance(p, str) and p.lower() == "pythonw.exe")]
+            save_config(self.cfg)
         self.fetching = False
         self._current_z = "top"
         self._foreground_check_id = None
@@ -5842,19 +5946,23 @@ class Widget:
             self._foreground_check_id = None
             return
         try:
-            name = get_foreground_process_name()
-            if name is not None:
-                names = [n.lower() for n in self.cfg.get("claude_processes", [])]
-                if name in names or "claude" in name:
-                    if self._current_z != "top":
-                        self.root.attributes("-topmost", True)
-                        set_window_zorder(self._hwnd(), "top")
-                        self._current_z = "top"
-                else:
-                    if self._current_z != "bottom":
-                        self.root.attributes("-topmost", False)
-                        set_window_zorder(self._hwnd(), "bottom")
-                        self._current_z = "bottom"
+            name, fg_pid = get_foreground_process()
+            names = [n.lower() for n in self.cfg.get("claude_processes", [])]
+            # Raise when the foreground is OUR window (matched by PID, not the
+            # generic pythonw.exe name), a real Claude app (matched by name), or
+            # a terminal host running the Claude CLI as a descendant process.
+            if (fg_pid == os.getpid()
+                    or (name and (name in names or "claude" in name))
+                    or (name in _TERMINAL_NAMES and claude_runs_under(fg_pid))):
+                if self._current_z != "top":
+                    self.root.attributes("-topmost", True)
+                    set_window_zorder(self._hwnd(), "top")
+                    self._current_z = "top"
+            else:
+                if self._current_z != "bottom":
+                    self.root.attributes("-topmost", False)
+                    set_window_zorder(self._hwnd(), "bottom")
+                    self._current_z = "bottom"
         finally:
             self._foreground_check_id = self.root.after(500, self._check_topmost)
 
