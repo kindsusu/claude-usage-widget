@@ -5809,7 +5809,7 @@ class Widget:
                                    command=self._toggle_minimize)
         self.menu.add_command(label="다크/라이트 전환", command=self._toggle_theme)
         self.smart_var = tk.BooleanVar(value=self.cfg.get("smart_topmost", True))
-        self.menu.add_checkbutton(label="스마트 위 (Claude 활성 시만 위로)",
+        self.menu.add_checkbutton(label="스마트 포지션 스위칭",
                                    variable=self.smart_var,
                                    command=self._toggle_smart)
         self.menu.add_command(label="플랜 이름 변경", command=self._prompt_plan)
