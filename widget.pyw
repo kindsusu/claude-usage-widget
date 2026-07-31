@@ -40,8 +40,22 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
+
+def _base_dir():
+    """Folder that holds this app's side-by-side files (widget_config.json).
+
+    Normally that is the folder containing this script. Under PyInstaller
+    onefile, __file__ points into the temporary sys._MEIPASS extraction dir,
+    which is deleted on exit — so a frozen build must anchor on the .exe's
+    own folder instead, or every setting would be silently thrown away."""
+    if getattr(sys, "frozen", False):
+        return Path(os.path.dirname(sys.executable))
+    return Path(__file__).parent
+
+
+BASE_DIR    = _base_dir()
 CREDS_PATH  = Path.home() / ".claude" / ".credentials.json"
-CONFIG_PATH = Path(__file__).with_name("widget_config.json")
+CONFIG_PATH = BASE_DIR / "widget_config.json"
 USAGE_URL   = "https://api.anthropic.com/api/oauth/usage"
 
 DEFAULT_CONFIG = {
@@ -5853,10 +5867,16 @@ class Widget:
         # process as the running instance and exit on startup.
         release_single_instance()
         try:
-            python_dir = Path(sys.executable).parent
-            pythonw = python_dir / "pythonw.exe"
-            exe = str(pythonw) if pythonw.exists() else sys.executable
-            subprocess.Popen([exe, __file__],
+            if getattr(sys, "frozen", False):
+                # Frozen build: the .exe *is* the launcher; __file__ points at
+                # the temp extraction dir and would not exist for the new run.
+                argv = [sys.executable]
+            else:
+                python_dir = Path(sys.executable).parent
+                pythonw = python_dir / "pythonw.exe"
+                exe = str(pythonw) if pythonw.exists() else sys.executable
+                argv = [exe, __file__]
+            subprocess.Popen(argv,
                              creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         except Exception:
             pass

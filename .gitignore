@@ -8,6 +8,11 @@ widget.log
 __pycache__/
 *.pyc
 
+# PyInstaller build output
+dist/
+build/
+*.spec
+
 # OS junk
 Thumbs.db
 .DS_Store
