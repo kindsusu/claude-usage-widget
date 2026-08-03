@@ -1,8 +1,10 @@
 # Claude Usage Widget
 
+📖 [한국어 사용설명서](docs/사용설명서.md)
+
 Always-on-top Windows desktop widget showing real-time Claude Max plan usage. Matches `claude.ai/settings/usage` exactly — pulls the same numbers via the official OAuth endpoint.
 
-![widget preview](https://via.placeholder.com/280x180?text=Widget+Preview)
+![widget preview](docs/img/full-light.png)
 
 ## Features
 
