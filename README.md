@@ -29,6 +29,10 @@ The widget reads the OAuth token Claude Code stores in `~/.claude/.credentials.j
 
 ## Install
 
+**Easiest** — download the standalone `ClaudeUsageWidget.exe` from [Releases](https://github.com/kindsusu/claude-usage-widget-WinOS/releases/latest) and double-click it. No Python required; you still need Claude Code installed and logged in.
+
+Or run from source:
+
 ```bash
 pip install pillow pystray
 ```
