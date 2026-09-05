@@ -17,6 +17,7 @@ Always-on-top Windows desktop widget showing real-time Claude Max plan usage. Ma
 - **System tray** — X button minimizes to tray; left-click tray to toggle, right-click for menu
 - **Gradient bars** — smooth green → yellow → red as usage climbs
 - **Single file** — `widget.pyw` is fully self-contained (~280 KB with embedded pet sprites)
+- **Auto-update** — checks GitHub Releases on launch and every 12 h; a new version is verified (sha256 + syntax + self-test) before it replaces itself, and the previous file is kept as `widget.pyw.bak`
 
 ## Requirements
 
@@ -29,19 +30,23 @@ The widget reads the OAuth token Claude Code stores in `~/.claude/.credentials.j
 
 ## Install
 
-**Easiest** — download the standalone `ClaudeUsageWidget.exe` from [Releases](https://github.com/kindsusu/claude-usage-widget-WinOS/releases/latest) and double-click it. No Python required; you still need Claude Code installed and logged in.
-
-Or run from source:
-
 ```bash
 pip install pillow pystray
 ```
 
-Download `widget.pyw` and double-click `실행.bat`, or run directly:
+Download the latest `widget.pyw` (this link always points at the newest release):
+
+```
+https://github.com/kindsusu/claude-usage-widget-WinOS/releases/latest/download/widget.pyw
+```
+
+Put it in a folder of its own (it writes `widget_config.json` beside itself), then double-click `실행.bat` from this repo or run directly:
 
 ```bash
 pythonw widget.pyw
 ```
+
+Cloning the repo works too, but note that auto-update overwrites `widget.pyw` in place — run `git checkout -- widget.pyw` before a `git pull` if git complains.
 
 ### Auto-start on boot
 
@@ -50,6 +55,30 @@ Create a shortcut to `widget.pyw` (target: `pythonw.exe "...\widget.pyw"`) and d
 ```
 Win+R → shell:startup → paste shortcut
 ```
+
+## Auto-update
+
+The widget keeps itself current without any action from you:
+
+1. 20 s after launch, and every 12 h after that, it resolves `…/releases/latest` and compares the tag with its own `__version__` (no GitHub API call, so no rate limit).
+2. If newer, it downloads `widget.pyw` and `widget.pyw.sha256` from that release.
+3. Three gates must all pass before anything changes on disk: the sha256 matches, the file compiles, and a fresh `pythonw widget.pyw.new --selftest` exits 0 (every import and module-level statement ran).
+4. The current file is copied to `widget.pyw.bak`, the new one is moved into place atomically, and the widget restarts itself — you see it blink once.
+
+Every step is written to `widget.log` next to the script. Turn it off with **자동 업데이트** in the right-click menu (`"auto_update": false` in `widget_config.json`). To roll back, rename `widget.pyw.bak` to `widget.pyw`.
+
+Only published Releases reach users; commits to `main` do not.
+
+### Publishing a release (maintainer)
+
+```bash
+# 1. bump __version__ in widget.pyw (e.g. "1.2.0"), commit, push
+# 2. tag — the tag must equal __version__ or the workflow refuses
+git tag v1.2.0
+git push --tags
+```
+
+[`release.yml`](.github/workflows/release.yml) then runs `py_compile` + `--selftest`, computes the sha256, and creates the Release with both assets. Users pick it up within 12 h (or on their next launch).
 
 ## How it works
 

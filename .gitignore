@@ -4,6 +4,10 @@ widget_config.json
 # Debug log
 widget.log
 
+# Auto-updater staging / rollback copies
+widget.pyw.new
+widget.pyw.bak
+
 # Python cache
 __pycache__/
 *.pyc

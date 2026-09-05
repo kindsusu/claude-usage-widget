@@ -17,6 +17,7 @@ Single-file portable. Requires: Python 3 + pillow + Claude Code logged in.
 import base64
 import ctypes
 from ctypes import wintypes
+import hashlib
 import io
 import json
 import os
@@ -71,11 +72,28 @@ DEFAULT_CONFIG = {
     "ui_scale": 1.0,  # baseline; user can override via menu (1.0 / 1.3 / 1.5 / 2.0)
     "minimized": False,  # iPhone-battery mini mode
     "mini_scale": 1.0,  # independent mini-mode size, adjustable live
+    "auto_update": True,  # pull new releases from GitHub and self-restart
 }
 
 # Keys that never persist to widget_config.json — changes via the prompt
 # apply for the current session only and revert to DEFAULT_CONFIG on restart.
 EPHEMERAL_KEYS = {"refresh_seconds"}
+
+# Bump this together with the git tag (the release workflow refuses a tag
+# that does not match). Users on older versions compare against the latest
+# release tag and pull the new widget.pyw automatically.
+__version__ = "1.1.0"
+
+# ---- Auto-update ----------------------------------------------------------
+# Release-gated: only a published GitHub Release reaches users, never a plain
+# push to main. Version discovery reads the redirect target of /releases/latest
+# (github.com, not api.github.com) so there is no per-IP API rate limit to hit.
+UPDATE_REPO        = "kindsusu/claude-usage-widget-WinOS"
+UPDATE_LATEST_URL  = f"https://github.com/{UPDATE_REPO}/releases/latest"
+UPDATE_ASSET_URL   = f"https://github.com/{UPDATE_REPO}/releases/latest/download/widget.pyw"
+UPDATE_SHA_URL     = UPDATE_ASSET_URL + ".sha256"
+UPDATE_FIRST_CHECK_MS = 20_000              # after launch, once the UI is up
+UPDATE_INTERVAL_MS    = 12 * 60 * 60 * 1000 # then every 12 h while running
 
 
 def _enable_dpi_awareness():
@@ -116,6 +134,97 @@ def detect_system_scale():
 
 # Must execute at import time so the call happens before any tk.Tk() runs.
 _enable_dpi_awareness()
+
+
+def _python_exe():
+    """Interpreter to spawn helper/replacement processes with. Prefer pythonw
+    so nothing flashes a console; fall back to whatever is running us."""
+    pythonw = Path(sys.executable).parent / "pythonw.exe"
+    return str(pythonw) if pythonw.exists() else sys.executable
+
+
+def _python_launcher():
+    """argv that re-runs this program. Under a frozen (PyInstaller) build the
+    .exe *is* the launcher and __file__ points at a temp extraction dir that
+    will not exist for the next run, so only the exe itself is returned."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [_python_exe(), __file__]
+
+
+def _update_log(msg):
+    """Append one line to widget.log beside the script. Update events are the
+    one thing worth a trace: a user reporting "it vanished and came back" can
+    be answered from this file."""
+    try:
+        with open(BASE_DIR / "widget.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [update] {msg}\n")
+    except Exception:
+        pass
+
+
+def _parse_version(tag):
+    """'v1.2.3' -> (1, 2, 3). Anything non-numeric -> None (never 'newer')."""
+    tag = (tag or "").strip().lstrip("vV")
+    try:
+        return tuple(int(p) for p in tag.split("."))
+    except ValueError:
+        return None
+
+
+def _http_get(url, timeout):
+    req = urllib.request.Request(
+        url, headers={"User-Agent": f"claude-usage-widget/{__version__}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read(), r.geturl()
+
+
+def fetch_latest_version(timeout=10):
+    """Return the latest release tag ('v1.2.3') by following the redirect of
+    /releases/latest to /releases/tag/<tag>. Empty string if no release."""
+    _, final = _http_get(UPDATE_LATEST_URL, timeout)
+    return final.rstrip("/").rsplit("/tag/", 1)[-1] if "/tag/" in final else ""
+
+
+def stage_update(target):
+    """Download the latest widget.pyw next to `target` as widget.pyw.new and
+    prove it is safe to swap in. Three independent gates, any failure raises
+    and leaves the running file untouched:
+      1. sha256 matches the .sha256 published with the same release
+      2. compile() — no SyntaxError
+      3. a fresh interpreter runs it with --selftest and exits 0, which
+         means every module-level statement (imports included) executed
+    Returns the staged Path."""
+    data, _ = _http_get(UPDATE_ASSET_URL, timeout=60)
+    sha_txt, _ = _http_get(UPDATE_SHA_URL, timeout=15)
+    expected = sha_txt.decode("utf-8", "replace").split()[0].strip().lower()
+    actual = hashlib.sha256(data).hexdigest()
+    if not expected or actual != expected:
+        raise ValueError(f"sha256 mismatch (got {actual[:12]}…, want {expected[:12]}…)")
+    compile(data.decode("utf-8"), "widget.pyw", "exec")
+    staged = target.with_name(target.name + ".new")
+    staged.write_bytes(data)
+    rc = subprocess.run(
+        [_python_exe(), str(staged), "--selftest"], timeout=120,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode
+    if rc != 0:
+        try:
+            staged.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(f"selftest exited {rc}")
+    return staged
+
+
+def apply_update(target, staged):
+    """Keep the previous file as widget.pyw.bak (manual rollback path), then
+    atomically replace the running script with the verified staged file."""
+    bak = target.with_name(target.name + ".bak")
+    try:
+        shutil.copy2(target, bak)
+    except OSError:
+        pass
+    os.replace(staged, target)
 
 
 _singleton_handle = None
@@ -5828,6 +5937,10 @@ class Widget:
                                    command=self._toggle_smart)
         self.menu.add_command(label="플랜 이름 변경", command=self._prompt_plan)
         self.menu.add_command(label="새로고침 간격 변경", command=self._prompt_interval)
+        self.auto_update_var = tk.BooleanVar(value=bool(self.cfg.get("auto_update", True)))
+        self.menu.add_checkbutton(label="자동 업데이트",
+                                   variable=self.auto_update_var,
+                                   command=self._toggle_auto_update)
         # UI scale cascade — selecting a value writes ui_scale to config
         # and restarts the widget so the new tk_scaling takes effect.
         current = self.cfg.get("ui_scale") or DEFAULT_CONFIG["ui_scale"]
@@ -5850,6 +5963,7 @@ class Widget:
         self.menu.add_separator()
         self.menu.add_command(label="펫 다시 뽑기", command=self._reroll_pet)
         self.menu.add_separator()
+        self.menu.add_command(label=f"버전 v{__version__}", state="disabled")
         self.menu.add_command(label="종료", command=self.quit)
         self.root.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
 
@@ -5862,25 +5976,87 @@ class Widget:
         # stored x/y are now in physical-pixel space and remain correct
         # across scale changes.
         save_config(self.cfg)
+        self._relaunch()
+
+    def _relaunch(self):
+        """Spawn a fresh copy of this program and exit. Used after a UI-scale
+        change (tk.scaling can't be applied retroactively) and after an
+        auto-update has swapped widget.pyw on disk."""
         # Release the singleton mutex BEFORE spawning the replacement so the
         # new process can acquire it; otherwise it would see this still-alive
         # process as the running instance and exit on startup.
         release_single_instance()
         try:
-            if getattr(sys, "frozen", False):
-                # Frozen build: the .exe *is* the launcher; __file__ points at
-                # the temp extraction dir and would not exist for the new run.
-                argv = [sys.executable]
-            else:
-                python_dir = Path(sys.executable).parent
-                pythonw = python_dir / "pythonw.exe"
-                exe = str(pythonw) if pythonw.exists() else sys.executable
-                argv = [exe, __file__]
-            subprocess.Popen(argv,
+            subprocess.Popen(_python_launcher(),
                              creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         except Exception:
             pass
         self.quit()
+
+    # ---- Auto-update -------------------------------------------------------
+    def _schedule_update_check(self, delay_ms):
+        """Arm the next release check. No-op when the user opted out or when
+        running as a frozen .exe (a running exe cannot overwrite itself)."""
+        if getattr(sys, "frozen", False) or not self.cfg.get("auto_update", True):
+            self._update_after_id = None
+            return
+        self._update_after_id = self.root.after(delay_ms, self._check_update)
+
+    def _check_update(self):
+        self._update_after_id = None
+        if not self.cfg.get("auto_update", True) or getattr(self, "_update_busy", False):
+            return
+        self._update_busy = True
+        target = Path(__file__).resolve()
+
+        def done():
+            self._update_busy = False
+            self._schedule_update_check(UPDATE_INTERVAL_MS)
+
+        def worker():
+            # Network + subprocess work off the Tk thread; results hop back
+            # via root.after(0, ...) exactly like the usage poller does.
+            try:
+                tag = fetch_latest_version()
+                latest, current = _parse_version(tag), _parse_version(__version__)
+                if not latest or not current or latest <= current:
+                    self.root.after(0, done)
+                    return
+                _update_log(f"found {tag} (running v{__version__}) — downloading")
+                staged = stage_update(target)
+                _update_log(f"{tag} passed sha256 + compile + selftest — restarting")
+                self.root.after(0, lambda: self._restart_into(target, staged))
+            except Exception as e:
+                _update_log(f"check failed: {type(e).__name__}: {e}")
+                try:
+                    self.root.after(0, done)
+                except Exception:
+                    pass
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _restart_into(self, target, staged):
+        try:
+            apply_update(target, staged)
+        except Exception as e:
+            _update_log(f"apply failed: {type(e).__name__}: {e}")
+            self._update_busy = False
+            self._schedule_update_check(UPDATE_INTERVAL_MS)
+            return
+        save_config(self.cfg)
+        self._relaunch()
+
+    def _toggle_auto_update(self):
+        self.cfg["auto_update"] = bool(self.auto_update_var.get())
+        save_config(self.cfg)
+        pending = getattr(self, "_update_after_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:
+                pass
+            self._update_after_id = None
+        if self.cfg["auto_update"]:
+            self._schedule_update_check(3000)
 
     def _set_mini_scale(self, scale):
         """Persist a new mini-mode size and redraw the battery strip live —
@@ -6246,10 +6422,17 @@ class Widget:
             pass
 
     def run(self):
+        self._schedule_update_check(UPDATE_FIRST_CHECK_MS)
         self.root.mainloop()
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv[1:]:
+        # Used by the auto-updater (and the release workflow): reaching this
+        # line in a fresh interpreter proves every module-level statement —
+        # imports, ctypes setup, DPI call — executed without error. No window,
+        # no mutex, no config touched.
+        sys.exit(0)
     # Exit silently if another instance already owns the singleton mutex
     # (e.g. the SessionStart hook fired while the widget was already running).
     if acquire_single_instance():
