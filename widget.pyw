@@ -82,7 +82,7 @@ EPHEMERAL_KEYS = {"refresh_seconds"}
 # Bump this together with the git tag (the release workflow refuses a tag
 # that does not match). Users on older versions compare against the latest
 # release tag and pull the new widget.pyw automatically.
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 # ---- Auto-update ----------------------------------------------------------
 # Release-gated: only a published GitHub Release reaches users, never a plain
@@ -5081,6 +5081,84 @@ def hide_from_taskbar(hwnd):
         pass
 
 
+# ---------------- Monitor clamping ----------------
+# Nothing else in this file stops a saved/restored/dragged window rect from
+# landing partly off the monitor (e.g. a maximized-then-restored taskbar, a
+# resolution change, or a drag that overshoots the edge). These helpers give
+# the widget a cheap way to pull itself fully back onto whichever monitor it
+# is nearest to, without ever moving it onto a *different* monitor.
+
+_MONITOR_DEFAULTTONEAREST = 2
+
+_user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.RECT)]
+_user32.GetWindowRect.restype = wintypes.BOOL
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+_user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+_user32.MonitorFromWindow.restype = ctypes.c_void_p
+_user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
+_user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+
+def monitor_rect_for_window(hwnd):
+    """Return the FULL monitor rect (left, top, right, bottom) — rcMonitor,
+    not rcWork — of the monitor nearest `hwnd`, or None on any failure.
+
+    MONITOR_DEFAULTTONEAREST is what makes multi-monitor setups behave: a
+    window sitting on (or dragged onto) a secondary monitor resolves to THAT
+    monitor's rect, so clamping keeps it there instead of snapping it back
+    onto the primary monitor. The process is System-DPI-aware (see
+    SetProcessDpiAwareness near the top of this file), so these are physical
+    pixels, consistent with winfo_x/y and GetWindowRect — do not mix in
+    winfo_screenwidth-style logical/scaled values here.
+    """
+    try:
+        mon = _user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+        if not mon:
+            return None
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not _user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+            return None
+        r = info.rcMonitor
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        return None
+
+
+def clamp_rect_to_monitor(x, y, w, h, mon):
+    """Return (x, y) so the w x h rect at (x, y) lies fully inside `mon`
+    (left, top, right, bottom).
+
+    Pure and side-effect free so it can be unit-tested without a display.
+    If the rect is larger than the monitor on an axis (a huge mini-scale on
+    a small monitor, say) there is no position that fits it fully — pin to
+    that axis's near edge (left/top) rather than trying to center or shrink
+    the window, since this function only ever repositions, never resizes.
+    """
+    left, top, right, bottom = mon
+    max_x = right - w
+    if max_x < left:
+        x = left
+    else:
+        x = max(left, min(x, max_x))
+    max_y = bottom - h
+    if max_y < top:
+        y = top
+    else:
+        y = max(top, min(y, max_y))
+    return (x, y)
+
+
 # ---------------- Config ----------------
 
 def load_config():
@@ -5513,6 +5591,10 @@ class Widget:
         def _post_map_win32():
             set_window_zorder(self._hwnd(), "top")
             hide_from_taskbar(self._hwnd())
+            # By now the window has its real on-screen size, so this is the
+            # first point where the fine-grained monitor clamp (as opposed
+            # to the coarse "way off-screen" reset above) can run reliably.
+            self._clamp_to_screen()
         self.root.after(80, _post_map_win32)
 
         self._setup_tray()
@@ -5527,6 +5609,51 @@ class Widget:
             return int(self.root.wm_frame(), 16)
         except (TypeError, ValueError):
             return self.root.winfo_id()
+
+    def _clamp_to_screen(self, persist=True):
+        """Nudge the window fully onto its monitor if any edge is off-screen.
+
+        Called after every drag, size change (minimize/restore, mini-scale
+        change) and tray restore, plus once at startup. Deliberately never
+        raises: worst case is the window stays wherever it already was,
+        which is no worse than before this method existed.
+        """
+        try:
+            self.root.update_idletasks()
+            hwnd = self._hwnd()
+            rect = None
+            if hwnd:
+                r = wintypes.RECT()
+                if _user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                    rect = (r.left, r.top, r.right - r.left, r.bottom - r.top)
+            if rect is None:
+                # Fallback when the hwnd lookup fails: Tk's own idea of
+                # position/size (less authoritative than GetWindowRect, but
+                # good enough to avoid leaving the window unclamped).
+                rect = (self.root.winfo_x(), self.root.winfo_y(),
+                        self.root.winfo_width(), self.root.winfo_height())
+            x, y, w, h = rect
+
+            mon = monitor_rect_for_window(hwnd) if hwnd else None
+            if mon is None:
+                # Fall back to the virtual root spanning all monitors so we
+                # still clamp *something* rather than doing nothing.
+                vx = self.root.winfo_vrootx()
+                vy = self.root.winfo_vrooty()
+                vw = self.root.winfo_vrootwidth() or self.root.winfo_screenwidth()
+                vh = self.root.winfo_vrootheight() or self.root.winfo_screenheight()
+                mon = (vx, vy, vx + vw, vy + vh)
+
+            new_x, new_y = clamp_rect_to_monitor(x, y, w, h, mon)
+            if (new_x, new_y) != (x, y):
+                self.root.geometry(f"+{new_x}+{new_y}")
+
+            if persist and (self.cfg.get("x") != new_x or self.cfg.get("y") != new_y):
+                self.cfg["x"] = new_x
+                self.cfg["y"] = new_y
+                save_config(self.cfg)
+        except Exception:
+            pass
 
     def _build_ui(self):
         self.outer = tk.Frame(self.root, padx=10, pady=6)
@@ -5675,6 +5802,11 @@ class Widget:
         # Resize the canvas live so mini-scale changes apply without restart.
         self.mini_canvas.config(width=int(round(230 * ms)),
                                  height=int(round(40 * ms)))
+        # The resize above can push the window's right/bottom edge past the
+        # monitor even though nothing moved — re-clamp once Tk has laid the
+        # new canvas size out (a direct call here would still see the old
+        # window geometry).
+        self.root.after(50, self._clamp_to_screen)
         c.delete("all")
 
         def S(v):
@@ -5801,6 +5933,9 @@ class Widget:
 
     def _toggle_minimize(self):
         self._set_minimized(not self.minimized)
+        # Minimizing/restoring changes the window's footprint (full card vs.
+        # battery strip); re-clamp once the new size is laid out.
+        self.root.after(50, self._clamp_to_screen)
 
     def _on_double_click(self, _e):
         if self.minimized:
@@ -5907,9 +6042,10 @@ class Widget:
         def move(e):
             self.root.geometry(f"+{e.x_root - self._dx}+{e.y_root - self._dy}")
         def end(_):
-            self.cfg["x"] = self.root.winfo_x()
-            self.cfg["y"] = self.root.winfo_y()
-            save_config(self.cfg)
+            # Also covers the mini (minimized) strip: root's bindtag is part
+            # of every descendant widget's bindtags by default, so a drag
+            # released on mini_canvas/mini_frame still calls this handler.
+            self._clamp_to_screen()
         for w in (self.root, self.title_lbl, self.pet_lbl):
             w.bind("<Button-1>", start)
             w.bind("<B1-Motion>", move)
@@ -6064,6 +6200,10 @@ class Widget:
         self.cfg["mini_scale"] = scale
         save_config(self.cfg)
         self._draw_mini()
+        # A bigger mini strip can push past the monitor edge with no drag
+        # involved; _draw_mini already schedules a clamp, this just makes
+        # the intent explicit at the call site that changes the size.
+        self.root.after(50, self._clamp_to_screen)
 
     def _reroll_pet(self):
         if not PETS_B64:
@@ -6408,6 +6548,9 @@ class Widget:
         self._current_z = "top"
         # deiconify is the main trigger for Windows re-adding a taskbar button
         hide_from_taskbar(self._hwnd())
+        # The screen setup (monitor count/resolution) may have changed while
+        # hidden in the tray; re-clamp once the restored window is laid out.
+        self.root.after(50, self._clamp_to_screen)
 
     def quit(self):
         save_config(self.cfg)
